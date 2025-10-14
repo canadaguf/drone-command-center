@@ -1,8 +1,10 @@
 # backend/main.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, Response
 from typing import List
 import json
 import logging
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("drone-backend")
@@ -55,6 +57,17 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+
+@app.get("/")
+async def root():
+    return {"message": "Drone Command Backend is running. Use /health or /ws."}
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(status_code=204)  # No content
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     # Determine if this is the drone or a web client
@@ -83,3 +96,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.error("Invalid JSON received")
     except WebSocketDisconnect:
         manager.disconnect(websocket, is_drone=is_drone)
+
+@app.get("/health")
+async def health_check():
+    return JSONResponse({
+        "status": "ok",
+        "drone_connected": manager.drone_connection is not None
+    })
