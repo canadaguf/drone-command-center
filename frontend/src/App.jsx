@@ -1,35 +1,30 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+// frontend/src/App.jsx
+import './index.css';
+import ControlPanel from './components/ControlPanel';
+import PersonTracker from './components/PersonTracker';
+import TelemetryPanel from './components/TelemetryPanel';
 
 function App() {
-  const [count, setCount] = useState(0)
-
   return (
-    <>
+    <div className="container">
       <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+        <div className="panel">
+          <h2 className="section-title">Flight Controls</h2>
+          <ControlPanel />
+        </div>
+
+        <div className="panel" style={{ marginTop: '20px' }}>
+          <h2 className="section-title">Detected Persons</h2>
+          <PersonTracker />
+        </div>
       </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
-        </p>
+
+      <div className="panel">
+        <h2 className="section-title">Live Telemetry</h2>
+        <TelemetryPanel />
       </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+    </div>
+  );
 }
 
-export default App
+export default App;
