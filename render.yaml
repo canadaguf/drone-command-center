@@ -1,0 +1,13 @@
+# render.yaml
+services:
+  - type: web
+    name: drone-command-backend
+    runtime: python
+    region: frankfurt        # or choose nearest: oregon, frankfurt, singapore, etc.
+    plan: free
+    envVars:
+      - key: PORT
+        value: 10000          # Render assigns port via $PORT; FastAPI must listen on it
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
