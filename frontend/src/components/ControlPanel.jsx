@@ -1,6 +1,7 @@
 // frontend/src/components/ControlPanel.jsx
 import { useState } from 'react';
 import ConfirmationModal from './ConfirmationModal';
+import useDroneWebSocket from '../hooks/useDroneWebSocket';
 
 const initialStatus = {
   connection: 'idle',
@@ -12,23 +13,23 @@ const initialStatus = {
   freeze: 'idle',
 };
 
-export default function ControlPanel({ sendCommand }) {
+export default function ControlPanel() {
+  // Get sendCommand from hook — NOT from props
+  const { sendCommand } = useDroneWebSocket();
   const [status, setStatus] = useState(initialStatus);
   const [showArmModal, setShowArmModal] = useState(false);
   const [showDisarmModal, setShowDisarmModal] = useState(false);
 
-  // This now uses the WebSocket sendCommand from props
   const handleCommand = (action, key) => {
     // Update UI status
     setStatus(prev => ({ ...prev, [key]: 'sending' }));
 
     // Send real command via WebSocket
-    sendCommand(action);
+    sendCommand(action); // Now this works!
 
-    // Simulate response feedback (you can later replace this with real ACK from drone)
+    // Simulate response feedback (replace later with real ACK from drone)
     setTimeout(() => {
       setStatus(prev => ({ ...prev, [key]: 'success' }));
-      // Auto-reset after 2s
       setTimeout(() => {
         setStatus(prev => ({ ...prev, [key]: 'idle' }));
       }, 2000);
@@ -70,7 +71,8 @@ export default function ControlPanel({ sendCommand }) {
         <div style={buttonRowStyle}>
           <div style={buttonWithStatusStyle}>
             <button
-              className="control-btn" onClick={() => setShowArmModal(true)}
+              className="control-btn"
+              onClick={() => setShowArmModal(true)}
               disabled={status.arm === 'sending'}
             >
               Arm
@@ -79,7 +81,8 @@ export default function ControlPanel({ sendCommand }) {
           </div>
           <div style={buttonWithStatusStyle}>
             <button
-              className="control-btn" onClick={() => setShowDisarmModal(true)}
+              className="control-btn"
+              onClick={() => setShowDisarmModal(true)}
               disabled={status.disarm === 'sending'}
             >
               Disarm
@@ -140,7 +143,7 @@ export default function ControlPanel({ sendCommand }) {
   );
 }
 
-// Styles
+// Styles (unchanged)
 const groupStyle = {
   marginBottom: '20px',
   paddingBottom: '16px',
@@ -166,5 +169,3 @@ const buttonWithStatusStyle = {
   alignItems: 'center',
   gap: '8px',
 };
-
-// Reuse button styles from index.css

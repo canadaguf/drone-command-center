@@ -1,72 +1,18 @@
 // frontend/src/components/ConfirmationModal.jsx
-// Inside ControlPanel.jsx
-
-import ConfirmationModal from './ConfirmationModal';
-import useDroneWebSocket from '../hooks/useDroneWebSocket';
-
-export default function ControlPanel() {
-  const { sendCommand } = useDroneWebSocket();
-
-  const [showArmModal, setShowArmModal] = useState(false);
-  const [showDisarmModal, setShowDisarmModal] = useState(false);
-
-  // Handlers
-  const handleArmConfirm = () => {
-    sendCommand("arm");           // ← This sends: { source: "web", type: "command", payload: { action: "arm" } }
-    setShowArmModal(false);
-  };
-
-  const handleDisarmConfirm = () => {
-    sendCommand("disarm");        // ← Sends: { ... action: "disarm" }
-    setShowDisarmModal(false);
-  };
+export default function ConfirmationModal({ isOpen, title, message, onConfirm, onCancel }) {
+  if (!isOpen) return null;
 
   return (
-    <>
-      {/* Arming Group */}
-      <div style={groupStyle}>
-        <h3 style={groupTitleStyle}>Arming</h3>
-        <div style={buttonRowStyle}>
-          <div style={buttonWithStatusStyle}>
-            <button
-              className="control-btn"
-              onClick={() => setShowArmModal(true)}
-              disabled={status.arm === 'sending'}
-            >
-              Arm
-            </button>
-            {getStatusIndicator('arm')}
-          </div>
-          <div style={buttonWithStatusStyle}>
-            <button
-              className="control-btn"
-              onClick={() => setShowDisarmModal(true)}
-              disabled={status.disarm === 'sending'}
-            >
-              Disarm
-            </button>
-            {getStatusIndicator('disarm')}
-          </div>
+    <div style={styles.overlay}>
+      <div style={styles.modal}>
+        <h3 style={{ marginBottom: '12px' }}>{title}</h3>
+        <p style={{ marginBottom: '20px', color: '#555' }}>{message}</p>
+        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+          <button onClick={onCancel} style={styles.cancelBtn}>Cancel</button>
+          <button onClick={onConfirm} style={styles.confirmBtn}>Confirm</button>
         </div>
       </div>
-
-      {/* Modals */}
-      <ConfirmationModal
-        isOpen={showArmModal}
-        title="Confirm Arming"
-        message="Are you sure you want to arm the drone? Propellers will spin!"
-        onConfirm={handleArmConfirm}
-        onCancel={() => setShowArmModal(false)}
-      />
-
-      <ConfirmationModal
-        isOpen={showDisarmModal}
-        title="Confirm Disarming"
-        message="Are you sure you want to disarm the drone?"
-        onConfirm={handleDisarmConfirm}
-        onCancel={() => setShowDisarmModal(false)}
-      />
-    </>
+    </div>
   );
 }
 

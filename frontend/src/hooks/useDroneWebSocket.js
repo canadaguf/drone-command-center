@@ -20,7 +20,7 @@ export default function useDroneWebSocket() {
   const handleMessage = useCallback((event) => {
     try {
       const msg = JSON.parse(event.data);
-      console.log('← Received from backend:', msg);
+      console.log('Received from backend:', msg);
 
       if (msg.source === 'drone') {
         if (msg.type === 'telemetry') {
@@ -47,7 +47,7 @@ export default function useDroneWebSocket() {
       payload: { action, ...payload },
     };
 
-    console.log('→ Sending command:', command);
+    console.log('Sending command:', command);
     ws.send(JSON.stringify(command));
   }, [isConnected, ws]);
 
@@ -56,7 +56,7 @@ export default function useDroneWebSocket() {
     const socket = new WebSocket(RENDER_BACKEND_URL);
 
     socket.onopen = () => {
-      console.log('✅ WebSocket connected to backend');
+      console.log('WebSocket connected to backend');
       setIsConnected(true);
       setError(null);
     };
@@ -69,7 +69,7 @@ export default function useDroneWebSocket() {
     };
 
     socket.onclose = () => {
-      console.log(' WebSocket disconnected. Reconnecting in 3s...');
+      console.log('WebSocket disconnected. Reconnecting in 3s...');
       setIsConnected(false);
       // Auto-reconnect
       setTimeout(() => {
