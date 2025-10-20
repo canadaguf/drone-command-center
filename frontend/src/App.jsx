@@ -4,6 +4,7 @@ import './index.css';
 import ControlPanel from './components/ControlPanel';
 import PersonTracker from './components/PersonTracker';
 import TelemetryPanel from './components/TelemetryPanel';
+import DistanceModeSelector from './components/DistanceModeSelector';
 import useDroneWebSocket from './hooks/useDroneWebSocket';
 
 function App() {
@@ -29,6 +30,11 @@ function App() {
             followedId={followedId}
             setFollowedId={setFollowedId}
           />
+        </div>
+
+        <div className="panel" style={{ marginTop: '20px' }}>
+          <h2 className="section-title">Tracking Settings</h2>
+          <DistanceModeSelector sendCommand={sendCommand} />
         </div>
       </div>
 

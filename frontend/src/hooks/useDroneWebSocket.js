@@ -73,7 +73,7 @@ export default function useDroneWebSocket() {
       setIsConnected(false);
       // Auto-reconnect
       setTimeout(() => {
-        // This will trigger re-run of useEffect
+        window.location.reload(); // Force reconnect
       }, 3000);
     };
 

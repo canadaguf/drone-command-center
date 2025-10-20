@@ -89,6 +89,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif msg.get("source") == "drone":
                     # Broadcast telemetry/detections to all web clients
                     await manager.broadcast_to_web(data)
+                    
+                    # Also relay command acknowledgments back to web clients
+                    if msg.get("type") in ["arm_success", "disarm_success", "takeoff_success", 
+                                         "land_success", "freeze_success", "connection_success", 
+                                         "prearm_success", "follow_success", "stop_following_success",
+                                         "set_distance_mode_success", "error"]:
+                        await manager.broadcast_to_web(data)
                 else:
                     logger.warning(f"Unknown message source: {msg}")
 

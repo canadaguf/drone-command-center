@@ -1,0 +1,31 @@
+[Unit]
+Description=Autonomous Drone Client
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/drone_client
+ExecStart=/home/pi/drone_client/venv/bin/python -m drone_client.main
+Restart=always
+RestartSec=10
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/home/pi/drone_client"
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=drone-client
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

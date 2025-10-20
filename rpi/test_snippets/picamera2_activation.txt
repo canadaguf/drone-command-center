@@ -1,0 +1,9 @@
+(mavenv) ilya@fpv:~/Desktop $ deactivate
+
+ilya@fpv:~/Desktop $ mv mavenv mavenv.bak
+
+ilya@fpv:~/Desktop $ python3 -m venv --system-site-packages mavenv
+
+ilya@fpv:~/Desktop $ source mavenv/bin/activate
+
+pip install ultralytics --no-deps

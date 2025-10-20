@@ -1,0 +1,20 @@
+rpicam-vid -t 0 --libav-format mpegts -o - | cvlc stream:///dev/stdin --sout '#rtp{sdp=rtsp://:8554/stream1}'
+
+rtsp://192.168.0.199:8554/stream1
+
+rpicam-vid -t 0 -n --libav-format mpegts -o - | cvlc stream:///dev/stdin --sout '#rtp{sdp=rtsp://:8554/stream1}'
+
+# check local camera
+rpicam-hello --timeout 0
+
+### FASTEST
+# get local IP
+hostname -I
+
+# run mediamtx stream
+cd ~/mediamtx
+./mediamtx
+
+# on other laptop access stream
+rtsp://192.168.0.199:8554/cam1
+http://192.168.137.56:8889/cam1/

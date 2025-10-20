@@ -1,0 +1,4 @@
+source ~/mavenv/bin/activate
+cd /home/ilya/Desktop
+ls -l /dev/serial*
+sudo lsof /dev/ttyAMA10

@@ -1,0 +1,10 @@
+# detection
+sudo i2cdetect -y 1
+
+# status_terminal
+cd ~/x120x
+sudo python3 merged.py
+
+# status_gui
+cd ~/x120x
+sudo python3 qtx120x.py

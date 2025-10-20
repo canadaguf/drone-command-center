@@ -1,0 +1,118 @@
+# Production configuration for autonomous drone client
+
+# MAVLink configuration
+mavlink:
+  connection: "/dev/ttyAMA0"
+  baud: 256000
+
+# Backend configuration
+backend:
+  ws_url: "wss://drone-command-center.onrender.com/ws?client=drone"
+  reconnect_interval: 5
+
+# Vision configuration
+vision:
+  model_path: "/home/pi/models/yolo11n.onnx"
+  input_size: 320
+  confidence: 0.5
+  target_fps: 25
+
+# Camera configuration
+camera:
+  width: 640
+  height: 480
+  fps: 30
+  fov_horizontal: 120
+  fov_vertical: 90
+
+# Tracking configuration
+tracking:
+  distance_modes:
+    close: 2.0
+    medium: 4.0
+    far: 6.0
+  default_mode: "medium"
+  
+  altitude:
+    auto_adjust: true
+    min_height: 1.0
+    max_height: 10.0
+  
+  lost_target:
+    hover_timeout: 2.0
+    land_timeout: 10.0
+
+# TOF sensors configuration
+tof_sensors:
+  multiplexer_address: 0x70
+  sensors:
+    - name: "forward"
+      channel: 0
+      direction: "front"
+      max_range: 4.0
+    - name: "down"
+      channel: 1
+      direction: "down"
+      max_range: 4.0
+  # Easy to add more sensors:
+  # - name: "left"
+  #   channel: 2
+  #   direction: "left"
+  #   max_range: 4.0
+  # - name: "right"
+  #   channel: 3
+  #   direction: "right"
+  #   max_range: 4.0
+  # - name: "back"
+  #   channel: 4
+  #   direction: "back"
+  #   max_range: 4.0
+
+# Safety configuration
+safety:
+  battery:
+    warn_percent: 30
+    critical_percent: 20
+    auto_land_percent: 15
+  
+  rc_override:
+    detection_enabled: true
+    threshold: 100
+    neutral_timeout: 2.0
+  
+  geofence:
+    enabled: false
+    max_altitude: 50
+    max_distance: 100
+
+# PID controller gains
+pid_gains:
+  yaw:
+    kp: 0.5
+    ki: 0.0
+    kd: 0.1
+  pitch:
+    kp: 0.3
+    ki: 0.0
+    kd: 0.05
+  roll:
+    kp: 0.3
+    ki: 0.0
+    kd: 0.05
+  distance:
+    kp: 0.2
+    ki: 0.0
+    kd: 0.1
+
+# VLM configuration (optional)
+vlm:
+  enabled: false
+  provider: "gemini"
+  model: "gemini-2.0-flash"
+  api_key: "${GEMINI_API_KEY}"
+
+# Logging configuration
+logging:
+  level: "INFO"
+  file: "/var/log/drone_client.log"
+  max_size_mb: 50
