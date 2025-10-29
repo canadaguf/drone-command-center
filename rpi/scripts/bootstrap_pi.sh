@@ -3,10 +3,17 @@
 
 set -euo pipefail
 
-# Defaults (can be overridden via env vars or flags)
-REPO_DIR_DEFAULT="$HOME/drone-command-center"
-CLIENT_DST_DIR="/home/pi/drone_client"
-MODELS_DIR="/home/pi/models"
+# Discover paths and calling user context
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Assume repo root is two levels up from this script (rpi/scripts → repo root)
+SCRIPT_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CALLING_USER="${SUDO_USER:-$(whoami)}"
+CALLING_HOME="$(getent passwd "$CALLING_USER" | cut -d: -f6 || echo "/home/$CALLING_USER")"
+
+# Defaults (can be overridden via env vars or flags). Prefer repo inferred from script location.
+REPO_DIR_DEFAULT="$SCRIPT_REPO_ROOT"
+CLIENT_DST_DIR="$CALLING_HOME/drone_client"
+MODELS_DIR="$CALLING_HOME/models"
 LOG_FILE="/var/log/drone_client.log"
 PY_VENV_DIR="$CLIENT_DST_DIR/venv"
 MODEL_URL_DEFAULT=""  # set via --model-url to auto-download
@@ -19,13 +26,13 @@ usage() {
   echo "  --setup-systemd      Install and enable the systemd service"
 }
 
-REPO_DIR="$REPO_DIR_DEFAULT"
+REPO_DIR_INPUT="$REPO_DIR_DEFAULT"
 MODEL_URL="$MODEL_URL_DEFAULT"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)
-      REPO_DIR="$2"; shift 2;;
+      REPO_DIR_INPUT="$2"; shift 2;;
     --model-url)
       MODEL_URL="$2"; shift 2;;
     --setup-systemd)
@@ -38,17 +45,38 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "=== Drone Client Bootstrap ==="
-echo "Repo dir:        $REPO_DIR"
+echo "Repo dir (input): $REPO_DIR_INPUT"
 echo "Client dst dir:  $CLIENT_DST_DIR"
 echo "Models dir:      $MODELS_DIR"
 echo "Venv dir:        $PY_VENV_DIR"
 echo "Model URL:       ${MODEL_URL:-<none>}"
 echo "Setup systemd:   $SETUP_SYSTEMD"
 
+# Expand repo path for the calling (non-root) user, handling tilde
+if [[ "$REPO_DIR_INPUT" == ~* ]]; then
+  REPO_DIR_INPUT="${REPO_DIR_INPUT/#\~/$CALLING_HOME}"
+fi
+
+# Resolve to absolute path if it exists
+if [[ -d "$REPO_DIR_INPUT" ]]; then
+  REPO_DIR="$(cd "$REPO_DIR_INPUT" && pwd)"
+else
+  REPO_DIR="$REPO_DIR_INPUT"
+fi
+
+echo "Repo dir:        $REPO_DIR"
+
 # 0) Basic sanity checks
 if [[ $(id -u) -ne 0 ]]; then
   echo "Please run with sudo (this script configures system packages and services)." >&2
   exit 1
+fi
+
+# If the detected repo dir isn't a directory, try to fall back to the git root from current working dir
+if [[ ! -d "$REPO_DIR" ]]; then
+  if git -C "$PWD" rev-parse --show-toplevel >/dev/null 2>&1; then
+    REPO_DIR="$(git -C "$PWD" rev-parse --show-toplevel)"
+  fi
 fi
 
 if [[ ! -d "$REPO_DIR" ]]; then
@@ -66,7 +94,7 @@ apt install -y \
   python3 python3-pip python3-venv python3-dev \
   git curl wget htop \
   i2c-tools libi2c-dev pkg-config \
-  libatlas-base-dev libblas-dev liblapack-dev libhdf5-dev \
+  libopenblas-dev liblapack-dev libhdf5-dev \
   python3-opencv \
   python3-picamera2 libcamera-dev libcap-dev
 
@@ -80,28 +108,33 @@ systemctl enable ssh --now || true
 echo "[3/6] Creating directories and setting ownership..."
 mkdir -p "$CLIENT_DST_DIR" "$MODELS_DIR"
 touch "$LOG_FILE"
-chown -R pi:pi "$CLIENT_DST_DIR" "$MODELS_DIR"
-chown pi:pi "$LOG_FILE"
+chown -R "$CALLING_USER:$CALLING_USER" "$CLIENT_DST_DIR" "$MODELS_DIR"
+chown "$CALLING_USER:$CALLING_USER" "$LOG_FILE"
 
 # 4) Python venv and pip dependencies
 echo "[4/6] Creating Python virtual environment and installing dependencies..."
-sudo -u pi bash -lc "python3 -m venv '$PY_VENV_DIR'"
-sudo -u pi bash -lc "source '$PY_VENV_DIR/bin/activate' && pip install --upgrade pip"
-sudo -u pi bash -lc "source '$PY_VENV_DIR/bin/activate' && pip install fastapi uvicorn websockets pymavlink numpy pyyaml smbus2 RPi.GPIO onnxruntime"
+sudo -u "$CALLING_USER" bash -lc "python3 -m venv '$PY_VENV_DIR'"
+sudo -u "$CALLING_USER" bash -lc "source '$PY_VENV_DIR/bin/activate' && pip install --upgrade pip"
+sudo -u "$CALLING_USER" bash -lc "source '$PY_VENV_DIR/bin/activate' && pip install fastapi uvicorn websockets pymavlink numpy pyyaml smbus2 RPi.GPIO onnxruntime"
 
 # 5) Copy code and config
 echo "[5/6] Copying drone client code and config..."
-rsync -a --delete "$REPO_DIR/rpi/drone_client/" "$CLIENT_DST_DIR/"
+if [[ -d "$REPO_DIR/rpi/drone_client" ]]; then
+  rsync -a --delete "$REPO_DIR/rpi/drone_client/" "$CLIENT_DST_DIR/"
+else
+  echo "Expected code directory not found: $REPO_DIR/rpi/drone_client" >&2
+  exit 1
+fi
 mkdir -p "$CLIENT_DST_DIR/config"
 if [[ -f "$REPO_DIR/rpi/drone_client/config/production.yaml" ]]; then
   cp "$REPO_DIR/rpi/drone_client/config/production.yaml" "$CLIENT_DST_DIR/config/"
 fi
-chown -R pi:pi "$CLIENT_DST_DIR"
+chown -R "$CALLING_USER:$CALLING_USER" "$CLIENT_DST_DIR"
 
 # 6) Optional: download model
 if [[ -n "$MODEL_URL" ]]; then
   echo "[6/6] Downloading model to $MODELS_DIR ..."
-  sudo -u pi bash -lc "wget -O '$MODELS_DIR/yolo11n.onnx' '$MODEL_URL'"
+  sudo -u "$CALLING_USER" bash -lc "wget -O '$MODELS_DIR/yolo11n.onnx' '$MODEL_URL'"
 fi
 
 # Optional: systemd setup

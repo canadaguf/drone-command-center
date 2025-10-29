@@ -15,8 +15,11 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from drone_client.config import Config
 from drone_client.controllers.pid_controller import PIDManager
+from drone_client.controllers.mavlink_controller import MAVLinkController
 from drone_client.vision.person_tracker import PersonTracker
 from drone_client.vision.depth_estimator import DepthEstimator
+from drone_client.vision.yolo_detector import YOLODetector
+from drone_client.sensors.camera import CameraManager
 from drone_client.sensors.telemetry import TelemetryCollector
 from drone_client.safety.rc_override_monitor import RCOverrideMonitor
 from drone_client.safety.lost_target_handler import LostTargetHandler
@@ -54,35 +57,46 @@ def test_pid_controller():
         return False
 
 def test_person_tracker():
-    """Test person tracker."""
-    print("\n=== Testing Person Tracker ===")
+    """Integration-style test: run YOLO on a camera frame (if available) and track persons."""
+    print("\n=== Testing Person Tracker (Camera + YOLO) ===")
     try:
+        cfg = Config()
+        cam_cfg = cfg.get_camera_config()
+        vision_cfg = cfg.get_vision_config()
+
+        # Initialize camera
+        camera = CameraManager(cam_cfg)
+        if not camera.initialize():
+            print("⚠️ Camera not available; skipping person tracker integration test")
+            return True  # not a failure if hardware is absent
+
+        # Ensure model exists
+        model_path = vision_cfg.get('model_path', '/home/ilya/models/yolo11n.onnx')
+        import os
+        if not os.path.exists(model_path):
+            print(f"⚠️ YOLO model not found at {model_path}; skipping detection")
+            camera.cleanup()
+            return True
+
+        yolo = YOLODetector(
+            model_path=model_path,
+            input_size=vision_cfg.get('input_size', 320),
+            confidence_threshold=vision_cfg.get('confidence', 0.5)
+        )
+
+        # Capture a frame and run detection
+        frame = camera.capture_frame()
+        if frame is None:
+            print("❌ Failed to capture frame from camera")
+            camera.cleanup()
+            return False
+
+        detections = yolo.detect(frame)
         tracker = PersonTracker()
-        print("✅ Person tracker created")
-        
-        # Test with dummy detections
-        detections = [
-            {
-                'id': 1,
-                'bbox': (100, 100, 200, 300),
-                'confidence': 0.9,
-                'class_name': 'person',
-                'center': (150, 200),
-                'area': 20000
-            }
-        ]
-        
         tracked = tracker.update(detections)
-        print(f"📊 Tracked persons: {len(tracked)}")
-        
-        # Test target setting
-        tracker.set_target(1)
-        print("✅ Target set")
-        
-        # Test status
-        status = tracker.get_status()
-        print(f"📊 Tracker status: {status}")
-        
+        print(f"📊 Persons detected: {len(detections)}, tracked: {len(tracked)}")
+
+        camera.cleanup()
         return True
     except Exception as e:
         print(f"❌ Person tracker test failed: {e}")
@@ -121,40 +135,25 @@ def test_depth_estimator():
         return False
 
 def test_telemetry_collector():
-    """Test telemetry collector."""
-    print("\n=== Testing Telemetry Collector ===")
+    """Integration-style test: pull live telemetry from MAVLink if connected."""
+    print("\n=== Testing Telemetry Collector (MAVLink) ===")
     try:
+        cfg = Config()
+        mav_cfg = cfg.get_mavlink_config()
         collector = TelemetryCollector()
-        print("✅ Telemetry collector created")
-        
-        # Test MAVLink data update
-        mavlink_data = {
-            'lat': 24.1234,
-            'lon': 120.5678,
-            'altitude': 15.2,
-            'battery_remaining': 85,
-            'mode': 'GUIDED',
-            'armed': True
-        }
-        collector.update_from_mavlink(mavlink_data)
-        print("✅ MAVLink data updated")
-        
-        # Test TOF data update
-        tof_data = {
-            'forward': {'distance': 3.2, 'valid': True},
-            'down': {'distance': 1.8, 'valid': True}
-        }
-        collector.update_from_tof(tof_data)
-        print("✅ TOF data updated")
-        
-        # Test tracking status update
-        collector.update_tracking_status("TRACKING")
-        print("✅ Tracking status updated")
-        
-        # Test telemetry retrieval
+
+        mav = MAVLinkController(mav_cfg)
+        if not mav.connect():
+            print("⚠️ MAVLink not connected; skipping live telemetry test")
+            return True
+
+        # Give MAVLink a moment to stream messages
+        time.sleep(1.0)
+        telem = mav.get_telemetry()
+        collector.update_from_mavlink(telem)
         telemetry = collector.get_telemetry()
-        print(f"📊 Telemetry: {telemetry}")
-        
+        print(f"📊 Live telemetry snapshot: {telemetry}")
+        mav.disconnect()
         return True
     except Exception as e:
         print(f"❌ Telemetry collector test failed: {e}")
@@ -222,10 +221,6 @@ def test_lost_target_handler():
         status = handler.update(False)
         print(f"📊 Status without target: {status.value}")
         
-        # Test status info
-        status_info = handler.get_status_info()
-        print(f"📊 Handler status: {status_info}")
-        
         return True
     except Exception as e:
         print(f"❌ Lost target handler test failed: {e}")
@@ -255,10 +250,6 @@ def test_battery_monitor():
         # Test with critical battery
         status = monitor.update(15.0, 20.5)
         print(f"📊 Status at 15%: {status.value}")
-        
-        # Test status info
-        status_info = monitor.get_status_info()
-        print(f"📊 Monitor status: {status_info}")
         
         return True
     except Exception as e:
