@@ -20,7 +20,7 @@ class MAVLinkController:
         Args:
             config: MAVLink configuration dictionary
         """
-        self.connection_string = config.get('connection', '/dev/ttyAMA0')
+        self.connection_string = config.get('connection', '/dev/ttyAMA10')
         self.baud = config.get('baud', 256000)
         self.master = None
         self.connected = False
