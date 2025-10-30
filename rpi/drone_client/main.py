@@ -83,7 +83,7 @@ class DroneClient:
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum} (Ctrl+C), shutting down gracefully...")
         self.running = False
-        # Note: Actual shutdown handled in shutdown() method
+        # Actual shutdown will happen in start() method when running=False
     
     async def initialize(self) -> bool:
         """Initialize all components.
@@ -136,12 +136,18 @@ class DroneClient:
                 logger.error("Failed to initialize camera")
                 return False
             
-            # Initialize TOF manager
+            # Initialize TOF manager (optional - can work without sensors)
             tof_config = self.config.get_tof_config()
-            self.tof_manager = TOFManager(tof_config)
-            if not self.tof_manager.start_reading():
-                logger.error("Failed to start TOF reading")
-                return False
+            try:
+                self.tof_manager = TOFManager(tof_config)
+                if not self.tof_manager.start_reading():
+                    logger.warning("Failed to start TOF reading - continuing without TOF sensors")
+                    logger.warning("TOF sensors are optional - system will work without them")
+                    self.tof_manager = None
+            except Exception as e:
+                logger.warning(f"TOF sensors not available: {e}")
+                logger.warning("Continuing without TOF sensors - they are optional")
+                self.tof_manager = None
             
             # Initialize telemetry
             self.telemetry = TelemetryCollector()
@@ -224,9 +230,15 @@ class DroneClient:
         ]
         
         try:
-            await asyncio.gather(*tasks)
+            # Wait for all tasks
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt caught in start()")
+            self.running = False
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         finally:
             await self.shutdown()
     
@@ -256,8 +268,9 @@ class DroneClient:
                 tracked_persons = self.person_tracker.update(detections)
                 
                 # Update tracking controller
-                tof_forward = self.tof_manager.get_forward_distance()
-                tof_down = self.tof_manager.get_down_distance()
+                # Use default values if TOF sensors not available
+                tof_forward = self.tof_manager.get_forward_distance() if self.tof_manager else None
+                tof_down = self.tof_manager.get_down_distance() if self.tof_manager else None
                 
                 tracking_commands = self.tracking_controller.update(
                     tracked_persons, tof_forward, tof_down
@@ -295,9 +308,10 @@ class DroneClient:
                 mavlink_telemetry = self.mavlink.get_telemetry()
                 self.telemetry.update_from_mavlink(mavlink_telemetry)
                 
-                # Get TOF data
-                tof_readings = self.tof_manager.get_all_readings()
-                self.telemetry.update_from_tof(tof_readings)
+                # Get TOF data (if available)
+                if self.tof_manager:
+                    tof_readings = self.tof_manager.get_all_readings()
+                    self.telemetry.update_from_tof(tof_readings)
                 
                 # Update tracking status
                 target_status = self.lost_target_handler.get_status_string()
@@ -367,9 +381,12 @@ class DroneClient:
         
         self.running = False
         
-        # Stop TOF reading
+        # Stop TOF reading (if initialized)
         if self.tof_manager:
-            self.tof_manager.stop_reading()
+            try:
+                self.tof_manager.stop_reading()
+            except Exception as e:
+                logger.warning(f"Error stopping TOF reading: {e}")
         
         # Disconnect WebSocket
         if self.websocket:
@@ -479,6 +496,7 @@ class DroneClient:
 
 async def main():
     """Main entry point."""
+    drone_client = None
     try:
         # Create and initialize drone client
         drone_client = DroneClient()
@@ -491,10 +509,20 @@ async def main():
         await drone_client.start()
         
     except KeyboardInterrupt:
-        logger.info("Interrupted by user")
+        logger.info("Interrupted by user (Ctrl+C)")
+        if drone_client:
+            await drone_client.shutdown()
     except Exception as e:
         logger.error(f"Fatal error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        if drone_client:
+            await drone_client.shutdown()
         sys.exit(1)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Force exit (Ctrl+C pressed twice)")
+        sys.exit(0)
