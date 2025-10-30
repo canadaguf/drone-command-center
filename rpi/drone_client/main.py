@@ -378,24 +378,48 @@ class DroneClient:
         """Handle command received."""
         logger.info(f"Command received: {command}")
         
-        if command == 'arm':
-            self.mavlink.arm()
-        elif command == 'disarm':
-            self.mavlink.disarm()
-        elif command == 'takeoff':
-            self.mavlink.request_takeoff(2.0)  # 2m altitude
-        elif command == 'land':
-            self.mavlink.request_land()
-        elif command == 'freeze':
-            self.mavlink.set_mode('GUIDED')
-        elif command == 'follow':
-            target_id = payload.get('target_id')
-            self.tracking_controller.set_target(target_id)
-        elif command == 'stop_following':
-            self.tracking_controller.stop_tracking()
-        elif command == 'set_distance_mode':
-            mode = payload.get('mode')
-            self.tracking_controller.set_distance_mode(mode)
+        try:
+            if command == 'arm':
+                success = self.mavlink.arm()
+                if not success:
+                    logger.error("Arm command failed - check MAVLink connection")
+            elif command == 'disarm':
+                success = self.mavlink.disarm()
+                if not success:
+                    logger.error("Disarm command failed - check MAVLink connection")
+            elif command == 'takeoff':
+                success = self.mavlink.request_takeoff(2.0)  # 2m altitude
+                if not success:
+                    logger.error("Takeoff command failed - check MAVLink connection")
+            elif command == 'land':
+                success = self.mavlink.request_land()
+                if not success:
+                    logger.error("Land command failed - check MAVLink connection")
+            elif command == 'freeze':
+                success = self.mavlink.set_mode('GUIDED')
+                if not success:
+                    logger.error("Freeze command failed - check MAVLink connection")
+            elif command == 'follow':
+                target_id = payload.get('target_id')
+                if self.tracking_controller:
+                    self.tracking_controller.set_target(target_id)
+                else:
+                    logger.error("Tracking controller not initialized")
+            elif command == 'stop_following':
+                if self.tracking_controller:
+                    self.tracking_controller.stop_tracking()
+                else:
+                    logger.error("Tracking controller not initialized")
+            elif command == 'set_distance_mode':
+                mode = payload.get('mode')
+                if self.tracking_controller:
+                    self.tracking_controller.set_distance_mode(mode)
+                else:
+                    logger.error("Tracking controller not initialized")
+        except Exception as e:
+            logger.error(f"Error executing command {command}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
     
     def _on_rc_override_start(self) -> None:
         """Handle RC override start."""

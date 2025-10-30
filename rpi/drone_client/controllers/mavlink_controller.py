@@ -72,16 +72,24 @@ class MAVLinkController:
         Returns:
             True if command sent successfully, False otherwise
         """
-        if not self.connected:
-            logger.error("Not connected to flight controller")
+        # Check if master connection exists (more reliable than self.connected flag)
+        if not self.master:
+            logger.error("Not connected to flight controller (master is None)")
             return False
         
         try:
             logger.info("Arming drone...")
+            # Use the same method as basic_arm.py which works
             self.master.arducopter_arm()
+            logger.info("Arm command sent successfully")
             return True
+        except AttributeError as e:
+            logger.error(f"arducopter_arm method not available: {e}")
+            return False
         except Exception as e:
             logger.error(f"Failed to arm drone: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return False
     
     def disarm(self) -> bool:
@@ -90,16 +98,24 @@ class MAVLinkController:
         Returns:
             True if command sent successfully, False otherwise
         """
-        if not self.connected:
-            logger.error("Not connected to flight controller")
+        # Check if master connection exists (more reliable than self.connected flag)
+        if not self.master:
+            logger.error("Not connected to flight controller (master is None)")
             return False
         
         try:
             logger.info("Disarming drone...")
+            # Use the same method as basic_arm.py which works
             self.master.arducopter_disarm()
+            logger.info("Disarm command sent successfully")
             return True
+        except AttributeError as e:
+            logger.error(f"arducopter_disarm method not available: {e}")
+            return False
         except Exception as e:
             logger.error(f"Failed to disarm drone: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return False
     
     def set_mode(self, mode_name: str) -> bool:
@@ -329,7 +345,19 @@ class MAVLinkController:
         Returns:
             True if connected, False otherwise
         """
-        return self.connected
+        # Check both flag and actual connection object
+        if not self.connected or not self.master:
+            return False
+        
+        # Try to verify connection is still alive by checking if we can access it
+        try:
+            # Quick check - try to access target_system (won't fail if disconnected, but validates object)
+            _ = self.master.target_system
+            return True
+        except:
+            # Connection might be dead, reset flag
+            self.connected = False
+            return False
     
     def get_system_info(self) -> Dict[str, Any]:
         """Get system information.
