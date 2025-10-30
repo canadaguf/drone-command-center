@@ -63,7 +63,11 @@ class YOLODetector:
             List of detection dictionaries
         """
         if self.net is None:
-            logger.error("Model not loaded")
+            # Don't spam logs - only log once per session
+            if not hasattr(self, '_model_error_logged'):
+                logger.warning(f"YOLO model not loaded at {self.model_path} - detection disabled")
+                logger.warning("Vision features will not work. Install model to enable.")
+                self._model_error_logged = True
             return []
         
         try:

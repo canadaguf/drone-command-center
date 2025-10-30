@@ -81,8 +81,9 @@ class DroneClient:
     
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
-        logger.info(f"Received signal {signum}, shutting down...")
+        logger.info(f"Received signal {signum} (Ctrl+C), shutting down gracefully...")
         self.running = False
+        # Note: Actual shutdown handled in shutdown() method
     
     async def initialize(self) -> bool:
         """Initialize all components.
@@ -104,13 +105,25 @@ class DroneClient:
             pid_config = self.config.get_pid_config()
             self.pid_manager = PIDManager(pid_config)
             
-            # Initialize vision components
+            # Initialize vision components (optional - can work without YOLO)
             vision_config = self.config.get_vision_config()
-            self.yolo_detector = YOLODetector(
-                model_path=vision_config.get('model_path', '/home/pi/models/yolo11n.onnx'),
-                input_size=vision_config.get('input_size', 320),
-                confidence_threshold=vision_config.get('confidence', 0.5)
-            )
+            model_path = vision_config.get('model_path', '/home/pi/models/yolo11n.onnx')
+            
+            # Try to load YOLO detector, but don't fail if model not available
+            try:
+                self.yolo_detector = YOLODetector(
+                    model_path=model_path,
+                    input_size=vision_config.get('input_size', 320),
+                    confidence_threshold=vision_config.get('confidence', 0.5)
+                )
+                if self.yolo_detector.net is None:
+                    logger.warning("YOLO model not loaded - vision features disabled")
+                    logger.warning(f"Model path: {model_path}")
+                    logger.warning("You can continue without vision - basic commands will work")
+            except Exception as e:
+                logger.warning(f"Failed to initialize YOLO detector: {e}")
+                logger.warning("Continuing without vision features")
+                self.yolo_detector = None
             
             self.person_tracker = PersonTracker()
             
@@ -220,6 +233,13 @@ class DroneClient:
     async def _vision_loop(self) -> None:
         """Vision processing loop."""
         logger.info("Vision loop started")
+        
+        # Skip vision loop if YOLO detector not available
+        if self.yolo_detector is None or self.yolo_detector.net is None:
+            logger.info("Vision loop disabled - YOLO model not available")
+            while self.running:
+                await asyncio.sleep(1)  # Sleep longer when disabled
+            return
         
         while self.running:
             try:
