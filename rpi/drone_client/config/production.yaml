@@ -2,7 +2,7 @@
 
 # MAVLink configuration
 mavlink:
-  connection: "/dev/ttyAMA10"
+  connection: "/dev/ttyAMA0"
   baud: 256000
 
 # Backend configuration
