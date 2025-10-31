@@ -12,7 +12,7 @@ backend:
 
 # Vision configuration
 vision:
-  model_path: "/home/pi/models/yolo11n.onnx"
+  model_path: "/home/ilya/models/yolo11n.onnx"
   input_size: 320
   confidence: 0.5
   target_fps: 25
