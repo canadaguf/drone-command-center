@@ -86,7 +86,10 @@ class TrackingController:
         self.tracking_active = False
         self.target_lost_time = 0
         
-        logger.info("Tracking stopped")
+        # Update telemetry to show hover status
+        self.telemetry.update_tracking_status("HOVERING")
+        
+        logger.info("Tracking stopped - entering hover mode")
     
     def set_distance_mode(self, mode: str) -> bool:
         """Set distance tracking mode.
@@ -307,19 +310,24 @@ class TrackingController:
         return adjustment
     
     def _get_idle_commands(self) -> Dict[str, Any]:
-        """Get idle commands (no tracking).
+        """Get idle commands (no tracking) - sends hover commands.
+        
+        When tracking stops, we send neutral RC commands to maintain hover.
+        The flight controller in GUIDED mode will maintain position.
         
         Returns:
-            Dictionary containing idle commands
+            Dictionary containing hover commands
         """
+        # Return hover commands when idle (maintain current position)
         return {
-            'roll': 0,
-            'pitch': 0,
-            'yaw': 0,
-            'throttle': 0,
+            'roll': 0,      # Neutral roll (1500 RC)
+            'pitch': 0,     # Neutral pitch (1500 RC)
+            'yaw': 0,       # Neutral yaw (1500 RC)
+            'throttle': 50, # Mid throttle to maintain altitude (1500 RC)
             'distance': 0,
             'target_distance': self.target_distance,
-            'tracking_active': False
+            'tracking_active': False,
+            'hover': True
         }
     
     def _get_hover_commands(self) -> Dict[str, Any]:

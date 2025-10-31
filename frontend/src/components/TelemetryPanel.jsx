@@ -1,5 +1,7 @@
 export default function TelemetryPanel({ telemetry }) {
-  if (!telemetry.gps?.lat) {
+  // Show telemetry even without GPS (GPS might not be available indoors)
+  // Just check if we have any telemetry data
+  if (!telemetry || (!telemetry.mode && !telemetry.battery && !telemetry.tracking_status)) {
     return <p>Waiting for telemetry...</p>;
   }
 

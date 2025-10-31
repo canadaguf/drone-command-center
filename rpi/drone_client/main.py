@@ -276,7 +276,9 @@ class DroneClient:
                     tracked_persons, tof_forward, tof_down
                 )
                 
-                # Send RC commands if tracking is active
+                # Send RC commands ONLY if tracking is active
+                # When hovering (tracking stopped), GUIDED mode handles position hold
+                # RC override is not needed and would interfere with GUIDED mode
                 if tracking_commands.get('tracking_active', False):
                     self.mavlink.send_rc_override(
                         tracking_commands['roll'],
@@ -284,6 +286,8 @@ class DroneClient:
                         tracking_commands['yaw'],
                         tracking_commands['throttle']
                     )
+                # When not tracking, GUIDED mode maintains position automatically
+                # No RC override needed - flight controller handles hover
                 
                 # Send detections to backend
                 await self.websocket.send_detections(tracked_persons, frame)
@@ -445,6 +449,9 @@ class DroneClient:
             elif command == 'stop_following':
                 if self.tracking_controller:
                     self.tracking_controller.stop_tracking()
+                    # Set GUIDED mode for position hold when tracking stops
+                    self.mavlink.set_mode('GUIDED')
+                    logger.info("Stop following - switched to GUIDED mode for hover")
                 else:
                     logger.error("Tracking controller not initialized")
             elif command == 'set_distance_mode':
