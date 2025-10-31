@@ -78,6 +78,11 @@ class MAVLinkController:
             return False
         
         try:
+            # Clear any active RC override before arming
+            # ArduPilot blocks arming if RC override is active
+            logger.info("Clearing RC override before arming...")
+            self.clear_rc_override()
+            
             logger.info("Arming drone...")
             # Use the same method as basic_arm.py which works
             self.master.arducopter_arm()
@@ -142,6 +147,40 @@ class MAVLinkController:
             return True
         except Exception as e:
             logger.error(f"Failed to set mode {mode_name}: {e}")
+            return False
+    
+    def clear_rc_override(self) -> bool:
+        """Clear RC override by sending UINT16_MAX values.
+        
+        This releases RC override control back to the flight controller.
+        ArduPilot requires this before arming can succeed.
+        According to MAVLink spec, sending UINT16_MAX (65535) releases override.
+        
+        Returns:
+            True if command sent successfully, False otherwise
+        """
+        if not self.master:
+            logger.warning("Not connected to flight controller")
+            return False
+        
+        try:
+            # Send RC override with UINT16_MAX (65535) to clear override
+            # This tells ArduPilot to release RC override and return control to RC receiver
+            import time
+            for _ in range(3):  # Send multiple times to ensure it's received
+                self.master.mav.rc_channels_override_send(
+                    self.master.target_system,
+                    self.master.target_component,
+                    65535, 65535, 65535, 65535,  # UINT16_MAX = no override
+                    65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535
+                )
+                time.sleep(0.05)  # Small delay between sends
+            
+            logger.debug("RC override cleared (sent UINT16_MAX)")
+            time.sleep(0.1)  # Small delay to let ArduPilot process
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to clear RC override: {e}")
             return False
     
     def send_rc_override(self, roll: int, pitch: int, yaw: int, throttle: int) -> bool:

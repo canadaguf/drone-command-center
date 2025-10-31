@@ -449,9 +449,11 @@ class DroneClient:
             elif command == 'stop_following':
                 if self.tracking_controller:
                     self.tracking_controller.stop_tracking()
+                    # Clear RC override to release control back to flight controller
+                    self.mavlink.clear_rc_override()
                     # Set GUIDED mode for position hold when tracking stops
                     self.mavlink.set_mode('GUIDED')
-                    logger.info("Stop following - switched to GUIDED mode for hover")
+                    logger.info("Stop following - cleared RC override and switched to GUIDED mode")
                 else:
                     logger.error("Tracking controller not initialized")
             elif command == 'set_distance_mode':
