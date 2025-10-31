@@ -27,6 +27,12 @@ export default function useDroneWebSocket() {
           setTelemetry(msg.payload);
         } else if (msg.type === 'detections') {
           setDetections(msg.payload.persons || []);
+        } else if (msg.type === 'follow_success' || msg.type === 'stop_following_success') {
+          // Commands are acknowledged - UI updates happen optimistically
+          console.log(`Command ${msg.type} acknowledged`);
+        } else if (msg.type === 'error') {
+          console.error('Error from drone:', msg.payload);
+          setError(msg.payload.message || 'Unknown error');
         }
       }
     } catch (e) {

@@ -2,45 +2,61 @@
 import { useState, useEffect } from 'react';
 
 export default function PersonTracker({ detections, sendCommand, followedId, setFollowedId }) {
-  // Simulate image updates every 3s (replace with real data later)
   const [personImages, setPersonImages] = useState({});
+  const [commandStatus, setCommandStatus] = useState({}); // Track command status per person
 
   useEffect(() => {
-    // Mock: generate/update preview every 3s
-    const interval = setInterval(() => {
-      const newImages = {};
-      detections.forEach(person => {
-        // In real app: this would come from drone (e.g., base64 snapshot)
-        // For now: use placeholder with ID
-        newImages[person.id] = `https://via.placeholder.com/80x120?text=ID+${person.id}`;
-      });
-      setPersonImages(newImages);
-    }, 3000);
-
-    // Initial load
-    const initial = {};
-    detections.forEach(p => {
-      initial[p.id] = `https://via.placeholder.com/80x120?text=ID+${p.id}`;
+    // Update images from detection data (thumbnails come as base64)
+    const newImages = {};
+    detections.forEach(person => {
+      if (person.thumbnail) {
+        // Convert base64 to data URL
+        newImages[person.id] = `data:image/jpeg;base64,${person.thumbnail}`;
+      } else {
+        // Fallback to placeholder if no thumbnail available
+        newImages[person.id] = `https://via.placeholder.com/80x120?text=CF+${person.id}`;
+      }
     });
-    setPersonImages(initial);
-
-    return () => clearInterval(interval);
+    setPersonImages(newImages);
   }, [detections]);
 
   const handleFollow = (id) => {
+    setCommandStatus(prev => ({ ...prev, [id]: 'sending' }));
+    
     if (followedId === id) {
       // Stop following
       sendCommand('stop_following', { target_id: id });
       setFollowedId(null);
+      // Optimistically update status
+      setTimeout(() => {
+        setCommandStatus(prev => ({ ...prev, [id]: 'success' }));
+        setTimeout(() => {
+          setCommandStatus(prev => {
+            const newStatus = { ...prev };
+            delete newStatus[id];
+            return newStatus;
+          });
+        }, 2000);
+      }, 300);
     } else {
       // Start following (only if not already following someone)
       if (followedId !== null) {
-        // Optional: auto-stop previous? Or enforce user to stop first?
-        // We'll allow direct switch for better UX
+        // Auto-stop previous target
         sendCommand('stop_following', { target_id: followedId });
       }
       sendCommand('follow', { target_id: id });
       setFollowedId(id);
+      // Optimistically update status
+      setTimeout(() => {
+        setCommandStatus(prev => ({ ...prev, [id]: 'success' }));
+        setTimeout(() => {
+          setCommandStatus(prev => {
+            const newStatus = { ...prev };
+            delete newStatus[id];
+            return newStatus;
+          });
+        }, 2000);
+      }, 300);
     }
   };
 
@@ -85,13 +101,20 @@ export default function PersonTracker({ detections, sendCommand, followedId, set
             {/* Info & Button */}
             <div style={{ flex: 1 }}>
               <div><strong>Person ID:</strong> {person.id}</div>
+              {person.confidence && (
+                <div style={{ fontSize: '0.9em', color: '#666', marginTop: '4px' }}>
+                  Confidence: {(person.confidence * 100).toFixed(1)}%
+                </div>
+              )}
               <button
                 className={isFollowed ? 'btn-secondary' : 'btn-primary'}
                 onClick={() => handleFollow(person.id)}
-                disabled={isDisabled}
+                disabled={isDisabled || commandStatus[person.id] === 'sending'}
                 style={{ marginTop: '8px', width: '100%' }}
               >
-                {isFollowed ? 'Stop Following' : 'Follow'}
+                {commandStatus[person.id] === 'sending' ? '⏳ Sending...' : 
+                 commandStatus[person.id] === 'success' ? '✓ Done' :
+                 isFollowed ? 'Stop Following' : 'Follow'}
               </button>
             </div>
           </div>
