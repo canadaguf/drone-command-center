@@ -45,7 +45,8 @@ class Config:
         return {
             "mavlink": {
                 "connection": "/dev/ttyAMA0",
-                "baud": 256000
+                "baud": 256000,
+                "takeoff_altitude": 2.0
             },
             "backend": {
                 "ws_url": "wss://drone-command-center.onrender.com/ws?client=drone",

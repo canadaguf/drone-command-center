@@ -1,8 +1,16 @@
 // Distance mode selector component
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
-export default function DistanceModeSelector({ sendCommand, currentMode = 'medium' }) {
-  const [selectedMode, setSelectedMode] = useState(currentMode);
+export default function DistanceModeSelector({ sendCommand, currentMode = null }) {
+  // Use currentMode from props (from telemetry) if available, otherwise default to 'medium'
+  const [selectedMode, setSelectedMode] = useState(currentMode || 'medium');
+  
+  // Sync with backend state when telemetry updates
+  useEffect(() => {
+    if (currentMode) {
+      setSelectedMode(currentMode);
+    }
+  }, [currentMode]);
 
   const distanceModes = [
     { value: 'close', label: 'Close (2m)', description: 'Indoor testing' },
@@ -11,8 +19,11 @@ export default function DistanceModeSelector({ sendCommand, currentMode = 'mediu
   ];
 
   const handleModeChange = (mode) => {
+    // Optimistically update UI
     setSelectedMode(mode);
+    // Send command to backend
     sendCommand('set_distance_mode', { mode });
+    console.log(`Distance mode changed to: ${mode}`);
   };
 
   return (

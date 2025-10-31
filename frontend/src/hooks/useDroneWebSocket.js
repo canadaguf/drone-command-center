@@ -12,6 +12,7 @@ export default function useDroneWebSocket() {
     battery: null,
     mode: 'DISCONNECTED',
     velocity: null,
+    distance_mode: null,  // Current tracking distance mode
   });
   const [detections, setDetections] = useState([]);
   const [error, setError] = useState(null);
@@ -27,9 +28,13 @@ export default function useDroneWebSocket() {
           setTelemetry(msg.payload);
         } else if (msg.type === 'detections') {
           setDetections(msg.payload.persons || []);
-        } else if (msg.type === 'follow_success' || msg.type === 'stop_following_success') {
+        } else if (msg.type === 'follow_success' || msg.type === 'stop_following_success' || msg.type === 'set_distance_mode_success') {
           // Commands are acknowledged - UI updates happen optimistically
           console.log(`Command ${msg.type} acknowledged`);
+          // For distance mode, we'll sync from telemetry, but log the success
+          if (msg.type === 'set_distance_mode_success') {
+            console.log('Distance mode changed successfully:', msg.payload);
+          }
         } else if (msg.type === 'error') {
           console.error('Error from drone:', msg.payload);
           setError(msg.payload.message || 'Unknown error');

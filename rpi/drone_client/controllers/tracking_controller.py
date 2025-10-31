@@ -6,6 +6,7 @@ Converts 2D person detection to 3D drone movement commands.
 import math
 import logging
 from typing import Dict, Any, Optional, Tuple, List
+from collections import deque
 import numpy as np
 
 from .pid_controller import PIDManager
@@ -61,7 +62,16 @@ class TrackingController:
         self.hover_timeout = self.lost_target_config.get('hover_timeout', 2.0)
         self.land_timeout = self.lost_target_config.get('land_timeout', 10.0)
         
+        # Safety: Yaw-only mode for close targets (SPF-inspired)
+        # Safety config is nested under tracking.safety
+        self.safety_config = config.get('safety', {})
+        self.yaw_only_threshold = self.safety_config.get('yaw_only_threshold', 2.0)  # meters
+        
+        # Action history for oscillation prevention
+        self.action_history = deque(maxlen=5)
+        
         logger.info(f"Tracking controller initialized: mode={self.current_distance_mode}, target_distance={self.target_distance}m")
+        logger.info(f"Safety: Yaw-only mode threshold = {self.yaw_only_threshold}m")
     
     def set_target(self, person_id: int) -> bool:
         """Set target person for tracking.
@@ -214,9 +224,51 @@ class TrackingController:
         # Determine distance
         distance = self._estimate_distance(detection, tof_forward)
         
-        # Calculate 3D displacement
-        lateral_x = distance * math.tan(angle_yaw)
-        lateral_y = distance * math.tan(angle_pitch)
+        # SAFETY: Yaw-only mode for close targets (SPF-inspired)
+        # Prevents forward movement when target is too close to avoid collisions
+        if distance < self.yaw_only_threshold:
+            logger.warning(f"Target too close ({distance:.2f}m < {self.yaw_only_threshold}m) - YAW ONLY mode")
+            
+            # Only calculate yaw correction
+            yaw_error = angle_yaw
+            pid_outputs = self.pid_manager.update({'yaw': yaw_error})
+            yaw_cmd = int(np.clip(pid_outputs['yaw'], -100, 100))
+            
+            # Apply altitude adjustment (still allow vertical movement for safety)
+            altitude_adjustment = 0
+            if self.auto_adjust_altitude:
+                altitude_adjustment = self._calculate_altitude_adjustment(
+                    error_y, tof_down
+                )
+            throttle_cmd = int(np.clip(50 + altitude_adjustment, 0, 100))
+            
+            # Store action history
+            action = {
+                'roll': 0,
+                'pitch': 0,  # No forward movement
+                'yaw': yaw_cmd,
+                'throttle': throttle_cmd,
+                'distance': distance,
+                'yaw_only': True
+            }
+            self.action_history.append(action)
+            
+            return {
+                'roll': 0,  # No lateral movement
+                'pitch': 0,  # No forward movement - SAFETY
+                'yaw': yaw_cmd,
+                'throttle': throttle_cmd,
+                'distance': distance,
+                'target_distance': self.target_distance,
+                'tracking_active': True,
+                'yaw_only': True  # Flag for telemetry/logging
+            }
+        
+        # Normal operation: full 3D tracking
+        # Calculate 3D displacement using improved projection
+        lateral_x, lateral_y = self._reverse_project_point(
+            (center_x, center_y), distance
+        )
         
         # Calculate PID outputs
         pid_errors = {
@@ -241,6 +293,32 @@ class TrackingController:
         yaw_cmd = int(np.clip(pid_outputs['yaw'], -100, 100))
         throttle_cmd = int(np.clip(50 + altitude_adjustment, 0, 100))
         
+        # Oscillation prevention: check action history
+        if len(self.action_history) >= 2:
+            last_action = self.action_history[-1]
+            # If yaw direction changed rapidly, reduce gain
+            if abs(yaw_cmd) > 0 and abs(last_action.get('yaw', 0)) > 0:
+                if (yaw_cmd * last_action['yaw']) < 0:  # Opposite signs
+                    logger.debug("Oscillation detected in yaw - reducing gain")
+                    yaw_cmd = int(yaw_cmd * 0.5)  # Reduce by 50%
+            
+            # Check for pitch oscillation
+            if abs(pitch_cmd) > 0 and abs(last_action.get('pitch', 0)) > 0:
+                if (pitch_cmd * last_action['pitch']) < 0:  # Opposite signs
+                    logger.debug("Oscillation detected in pitch - reducing gain")
+                    pitch_cmd = int(pitch_cmd * 0.5)
+        
+        # Store action history
+        action = {
+            'roll': roll_cmd,
+            'pitch': pitch_cmd,
+            'yaw': yaw_cmd,
+            'throttle': throttle_cmd,
+            'distance': distance,
+            'yaw_only': False
+        }
+        self.action_history.append(action)
+        
         return {
             'roll': roll_cmd,
             'pitch': pitch_cmd,
@@ -248,12 +326,13 @@ class TrackingController:
             'throttle': throttle_cmd,
             'distance': distance,
             'target_distance': self.target_distance,
-            'tracking_active': True
+            'tracking_active': True,
+            'yaw_only': False
         }
     
     def _estimate_distance(self, detection: Dict[str, Any], 
                           tof_forward: Optional[float]) -> float:
-        """Estimate distance to target.
+        """Estimate distance to target with improved accuracy (SPF-inspired).
         
         Args:
             detection: Target detection
@@ -262,28 +341,71 @@ class TrackingController:
         Returns:
             Estimated distance in meters
         """
-        # Use TOF if available and within range
+        # Use TOF if available and within range (most accurate)
         if tof_forward is not None and 0.5 <= tof_forward <= 4.0:
             return tof_forward
         
-        # Estimate from bbox size (simplified)
+        # Estimate from bbox size with improved calibration
         bbox = detection['bbox']
         bbox_height = bbox[3] - bbox[1]  # y2 - y1
         
-        # Simple heuristic: larger bbox = closer person
+        # Height ratio: larger bbox = closer person
         height_ratio = bbox_height / self.camera_height
         
-        # Rough distance estimation (calibrate empirically)
+        # Improved distance estimation with smoother transitions
+        # Based on SPF project's calibration approach
         if height_ratio > 0.5:
-            return 1.0
+            return 1.0  # Very close
         elif height_ratio > 0.3:
-            return 2.0
+            return 2.0  # Close
         elif height_ratio > 0.2:
-            return 3.0
+            return 3.0  # Medium-close
+        elif height_ratio > 0.15:
+            # Smooth interpolation for medium distances
+            # Linear interpolation between 3.0 and 5.0
+            t = (height_ratio - 0.15) / (0.2 - 0.15)
+            return 3.0 + t * 2.0
         elif height_ratio > 0.1:
-            return 5.0
+            return 5.0  # Medium-far
+        elif height_ratio > 0.05:
+            # Smooth interpolation for far distances
+            t = (height_ratio - 0.05) / (0.1 - 0.05)
+            return 5.0 + t * 3.0
         else:
-            return 8.0
+            return 8.0  # Very far
+    
+    def _reverse_project_point(self, point_2d: Tuple[float, float], 
+                               depth: float) -> Tuple[float, float]:
+        """Reverse project 2D point to 3D space (SPF-inspired improved projection).
+        
+        Uses reference point at 35% from top for better drone perspective.
+        
+        Args:
+            point_2d: 2D image point (x, y)
+            depth: Estimated depth in meters
+            
+        Returns:
+            Tuple of (lateral_x, lateral_y) in 3D space
+        """
+        center_x = self.camera_width / 2
+        reference_y = self.camera_height * 0.35  # 35% from top (SPF reference)
+        
+        # Normalized coordinates
+        x_normalized = (point_2d[0] - center_x) / (self.camera_width / 2)
+        y_normalized = (reference_y - point_2d[1]) / (self.camera_height / 2)
+        
+        # Depth adjustment based on vertical position (closer if lower in image)
+        depth_factor = 1.0 + (y_normalized * 0.5)
+        adjusted_depth = depth * depth_factor
+        
+        # Calculate 3D coordinates with FOV
+        fov_h_rad = math.radians(self.fov_horizontal / 2)
+        fov_v_rad = math.radians(self.fov_vertical / 2)
+        
+        lateral_x = adjusted_depth * x_normalized * math.tan(fov_h_rad)
+        lateral_y = adjusted_depth * y_normalized * math.tan(fov_v_rad)
+        
+        return (lateral_x, lateral_y)
     
     def _calculate_altitude_adjustment(self, vertical_error: float, 
                                      tof_down: Optional[float]) -> float:

@@ -34,6 +34,7 @@ class TelemetryData:
     # Tracking status
     tracking_status: str = "DISCONNECTED"
     rc_override_active: bool = False
+    distance_mode: Optional[str] = None  # Current tracking distance mode
     
     # Timestamp
     timestamp: float = 0.0
@@ -95,6 +96,14 @@ class TelemetryCollector:
         """
         self.last_telemetry.tracking_status = status
     
+    def update_distance_mode(self, mode: str) -> None:
+        """Update distance tracking mode.
+        
+        Args:
+            mode: Distance mode ('close', 'medium', 'far')
+        """
+        self.last_telemetry.distance_mode = mode
+    
     def get_telemetry(self) -> Dict[str, Any]:
         """Get current telemetry data.
         
@@ -141,6 +150,7 @@ class TelemetryCollector:
             'tof_down': self.last_telemetry.tof_down,
             'tracking_status': self.last_telemetry.tracking_status,
             'rc_override_active': self.last_telemetry.rc_override_active,
+            'distance_mode': self.last_telemetry.distance_mode,
             'timestamp': self.last_telemetry.timestamp
         }
     

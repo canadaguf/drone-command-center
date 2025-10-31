@@ -157,6 +157,9 @@ class DroneClient:
             self.tracking_controller = TrackingController(
                 tracking_config, self.pid_manager, self.telemetry
             )
+            # Initialize distance mode in telemetry
+            default_mode = tracking_config.get('default_mode', 'medium')
+            self.telemetry.update_distance_mode(default_mode)
             
             # Initialize WebSocket client
             backend_config = self.config.get_backend_config()
@@ -321,6 +324,11 @@ class DroneClient:
                 target_status = self.lost_target_handler.get_status_string()
                 self.telemetry.update_tracking_status(target_status)
                 
+                # Update distance mode from tracking controller
+                if self.tracking_controller:
+                    tracking_status = self.tracking_controller.get_status()
+                    self.telemetry.update_distance_mode(tracking_status.get('distance_mode'))
+                
                 # Get telemetry data
                 telemetry_data = self.telemetry.get_telemetry()
                 
@@ -429,7 +437,11 @@ class DroneClient:
                 if not success:
                     logger.error("Disarm command failed - check MAVLink connection")
             elif command == 'takeoff':
-                success = self.mavlink.request_takeoff(2.0)  # 2m altitude
+                # Get takeoff altitude from config (default 2.0m)
+                mavlink_config = self.config.get_mavlink_config()
+                takeoff_altitude = mavlink_config.get('takeoff_altitude', 2.0)
+                logger.info(f"Takeoff requested to {takeoff_altitude}m altitude")
+                success = self.mavlink.request_takeoff(takeoff_altitude)
                 if not success:
                     logger.error("Takeoff command failed - check MAVLink connection")
             elif command == 'land':
@@ -459,7 +471,13 @@ class DroneClient:
             elif command == 'set_distance_mode':
                 mode = payload.get('mode')
                 if self.tracking_controller:
-                    self.tracking_controller.set_distance_mode(mode)
+                    success = self.tracking_controller.set_distance_mode(mode)
+                    if success:
+                        # Update telemetry with new mode
+                        self.telemetry.update_distance_mode(mode)
+                        logger.info(f"Distance mode changed to {mode}")
+                    else:
+                        logger.error(f"Failed to set distance mode to {mode}")
                 else:
                     logger.error("Tracking controller not initialized")
         except Exception as e:

@@ -34,7 +34,10 @@ function App() {
 
         <div className="panel" style={{ marginTop: '20px' }}>
           <h2 className="section-title">Tracking Settings</h2>
-          <DistanceModeSelector sendCommand={sendCommand} />
+          <DistanceModeSelector 
+            sendCommand={sendCommand} 
+            currentMode={telemetry.distance_mode}
+          />
         </div>
       </div>
 

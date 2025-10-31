@@ -53,6 +53,18 @@ export default function TelemetryPanel({ telemetry }) {
             {telemetry.tracking_status ?? 'DISCONNECTED'}
           </span>
         </p>
+        {telemetry.distance_mode && (
+          <p>
+            <strong>Distance Mode:</strong> 
+            <span style={{ 
+              fontWeight: 'bold',
+              marginLeft: '8px',
+              textTransform: 'capitalize'
+            }}>
+              {telemetry.distance_mode}
+            </span>
+          </p>
+        )}
         {telemetry.rc_override_active && (
           <p style={{ color: '#e74c3c', fontWeight: 'bold' }}>
             ⚠️ MANUAL CONTROL ACTIVE

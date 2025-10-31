@@ -4,6 +4,7 @@
 mavlink:
   connection: "/dev/ttyAMA0"
   baud: 256000
+  takeoff_altitude: 0.5  # Default takeoff altitude in meters
 
 # Backend configuration
 backend:
@@ -35,12 +36,16 @@ tracking:
   
   altitude:
     auto_adjust: true
-    min_height: 1.0
-    max_height: 10.0
+    min_height: 0.5
+    max_height: 2.0
   
   lost_target:
     hover_timeout: 2.0
     land_timeout: 10.0
+  
+  # Safety configuration (SPF-inspired improvements)
+  safety:
+    yaw_only_threshold: 2.0  # Distance (meters) below which only yaw commands are sent (no forward movement)
 
 # TOF sensors configuration
 tof_sensors:
