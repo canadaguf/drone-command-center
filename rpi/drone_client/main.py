@@ -191,6 +191,9 @@ class DroneClient:
             on_command=self._on_command_received
         )
         
+        # Set command executor to execute commands immediately
+        self.websocket.set_command_executor(self._on_command_received)
+        
         # RC override callbacks
         self.rc_monitor.set_callbacks(
             on_start=self._on_rc_override_start,
