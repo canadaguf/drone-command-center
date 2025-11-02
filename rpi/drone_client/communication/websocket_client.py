@@ -49,6 +49,9 @@ class WebSocketClient:
         self.on_disconnect_callback = None
         self.on_command_callback = None
         
+        # Command executor (set by drone client)
+        self.command_executor = None
+        
     def _register_default_handlers(self) -> None:
         """Register default command handlers."""
         self.command_handlers = {
@@ -73,6 +76,15 @@ class WebSocketClient:
         """
         self.command_handlers[command] = handler
         logger.info(f"Custom handler registered for command: {command}")
+    
+    def set_command_executor(self, executor: Callable) -> None:
+        """Set command executor function.
+        
+        Args:
+            executor: Function that executes commands (command_name, payload) -> None
+        """
+        self.command_executor = executor
+        logger.info("Command executor set")
     
     def set_callbacks(self, on_connect: Optional[Callable] = None,
                      on_disconnect: Optional[Callable] = None,
@@ -174,7 +186,11 @@ class WebSocketClient:
                 action = payload.get('action')
                 
                 if action in self.command_handlers:
-                    # Execute command
+                    # Execute command via command executor if set
+                    if self.command_executor:
+                        self.command_executor(action, payload)
+                    
+                    # Execute handler (for logging/acknowledgment)
                     result = await self.command_handlers[action](payload)
                     
                     # Send acknowledgment
