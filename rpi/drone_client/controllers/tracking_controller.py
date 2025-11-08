@@ -42,8 +42,13 @@ class TrackingController:
         # Altitude control
         self.altitude_config = config.get('altitude', {})
         self.auto_adjust_altitude = self.altitude_config.get('auto_adjust', True)
+        self.target_altitude = self.altitude_config.get('target_altitude', 1.5)  # Target altitude to maintain
         self.min_height = self.altitude_config.get('min_height', 1.0)
         self.max_height = self.altitude_config.get('max_height', 10.0)
+        
+        # Base hover throttle (will be dynamically adjusted, but this is starting point)
+        # This should be calibrated for your specific drone
+        self.base_hover_throttle = self.altitude_config.get('base_hover_throttle', 50)
         
         # Camera parameters
         self.camera_width = 640  # Will be updated from camera
@@ -127,13 +132,15 @@ class TrackingController:
     
     def update(self, detections: List[Dict[str, Any]], 
                 tof_forward: Optional[float] = None,
-                tof_down: Optional[float] = None) -> Dict[str, Any]:
+                tof_down: Optional[float] = None,
+                current_altitude: Optional[float] = None) -> Dict[str, Any]:
         """Update tracking controller with new detections.
         
         Args:
             detections: List of person detections
             tof_forward: Forward TOF distance
             tof_down: Downward TOF distance
+            current_altitude: Current altitude from MAVLink (relative_alt) in meters
             
         Returns:
             Dictionary containing tracking commands and status
@@ -153,7 +160,7 @@ class TrackingController:
         
         # Calculate tracking commands
         commands = self._calculate_tracking_commands(
-            target_detection, tof_forward, tof_down
+            target_detection, tof_forward, tof_down, current_altitude
         )
         
         # Update telemetry
@@ -198,7 +205,8 @@ class TrackingController:
     
     def _calculate_tracking_commands(self, detection: Dict[str, Any], 
                                    tof_forward: Optional[float],
-                                   tof_down: Optional[float]) -> Dict[str, Any]:
+                                   tof_down: Optional[float],
+                                   current_altitude: Optional[float] = None) -> Dict[str, Any]:
         """Calculate tracking commands from detection.
         
         Args:
@@ -235,7 +243,7 @@ class TrackingController:
             if tof_forward < self.emergency_stop_threshold:
                 # Emergency stop - obstacle very close
                 logger.warning(f"EMERGENCY STOP: Forward obstacle detected at {tof_forward:.2f}m")
-                return self._get_emergency_stop_commands(distance, tof_down)
+                return self._get_emergency_stop_commands(distance, tof_down, current_altitude)
             elif tof_forward < self.obstacle_threshold_forward:
                 # Obstacle detected - prevent forward movement
                 obstacle_detected_forward = True
@@ -252,13 +260,10 @@ class TrackingController:
             pid_outputs = self.pid_manager.update({'yaw': yaw_error})
             yaw_cmd = int(np.clip(pid_outputs['yaw'], -100, 100))
             
-            # Apply altitude adjustment (still allow vertical movement for safety)
-            altitude_adjustment = 0
-            if self.auto_adjust_altitude:
-                altitude_adjustment = self._calculate_altitude_adjustment(
-                    error_y, tof_down
-                )
-            throttle_cmd = int(np.clip(50 + altitude_adjustment, 0, 100))
+            # Calculate throttle dynamically based on altitude
+            throttle_cmd = self._calculate_throttle(
+                current_altitude, tof_down, error_y
+            )
             
             # Store action history
             action = {
@@ -298,18 +303,15 @@ class TrackingController:
         
         pid_outputs = self.pid_manager.update(pid_errors)
         
-        # Apply altitude adjustment (enhanced with downward TOF)
-        altitude_adjustment = 0
-        if self.auto_adjust_altitude:
-            altitude_adjustment = self._calculate_altitude_adjustment(
-                error_y, tof_down
-            )
-        
         # Generate RC commands
         roll_cmd = int(np.clip(pid_outputs['roll'], -100, 100))
         pitch_cmd = int(np.clip(pid_outputs['pitch'], -100, 100))
         yaw_cmd = int(np.clip(pid_outputs['yaw'], -100, 100))
-        throttle_cmd = int(np.clip(50 + altitude_adjustment, 0, 100))
+        
+        # Calculate throttle dynamically based on altitude
+        throttle_cmd = self._calculate_throttle(
+            current_altitude, tof_down, error_y
+        )
         
         # OBSTACLE AVOIDANCE: Prevent forward movement if obstacle detected
         if obstacle_detected_forward and pitch_cmd > 0:
@@ -434,6 +436,74 @@ class TrackingController:
         
         return (lateral_x, lateral_y)
     
+    def _calculate_throttle(self, current_altitude: Optional[float],
+                           tof_down: Optional[float],
+                           vertical_error: float = 0.0) -> int:
+        """Calculate throttle dynamically based on altitude feedback.
+        
+        Uses PID control to maintain target altitude. This prevents hardcoded
+        throttle values that don't account for different drone weights/configurations.
+        
+        Args:
+            current_altitude: Current altitude from MAVLink (relative_alt) in meters
+            tof_down: Downward TOF distance in meters (fallback if MAVLink unavailable)
+            vertical_error: Vertical pixel error from visual tracking
+            
+        Returns:
+            Throttle command (0-100)
+        """
+        # Determine actual altitude (prefer MAVLink, fallback to TOF)
+        actual_altitude = current_altitude
+        if actual_altitude is None and tof_down is not None:
+            # Use TOF as fallback (less accurate but better than nothing)
+            actual_altitude = tof_down
+            logger.debug(f"Using TOF altitude ({tof_down:.2f}m) as fallback")
+        
+        # If no altitude data available, use base hover throttle
+        if actual_altitude is None:
+            logger.warning("No altitude data available - using base hover throttle")
+            return self.base_hover_throttle
+        
+        # Calculate altitude error (target - actual)
+        altitude_error = self.target_altitude - actual_altitude
+        
+        # Use PID controller for altitude if available
+        if 'altitude' in self.pid_manager.controllers:
+            pid_output = self.pid_manager.controllers['altitude'].update(altitude_error)
+            # PID output is in range -100 to 100, convert to throttle adjustment
+            throttle_adjustment = pid_output
+        else:
+            # Fallback: simple proportional control
+            kp = 15.0  # Proportional gain
+            throttle_adjustment = kp * altitude_error
+        
+        # Add visual tracking adjustment (small contribution)
+        visual_adjustment = -vertical_error * 0.05  # Small scale factor
+        
+        # Calculate base throttle (start from hover)
+        throttle = self.base_hover_throttle + throttle_adjustment + visual_adjustment
+        
+        # Apply safety limits based on TOF downward sensor
+        if tof_down is not None:
+            if tof_down < self.obstacle_threshold_down:
+                # Emergency: too close to ground - force climb
+                logger.warning(f"Ground too close ({tof_down:.2f}m) - forcing climb")
+                throttle = max(throttle, self.base_hover_throttle + 30)
+            elif tof_down < 0.8:
+                # Low altitude - ensure minimum climb
+                throttle = max(throttle, self.base_hover_throttle + 15)
+            elif tof_down > self.max_height:
+                # Too high - limit maximum throttle
+                throttle = min(throttle, self.base_hover_throttle - 10)
+        
+        # Clamp to valid range (0-100)
+        throttle = int(np.clip(throttle, 0, 100))
+        
+        logger.debug(f"Throttle: alt={actual_altitude:.2f}m, target={self.target_altitude:.2f}m, "
+                    f"error={altitude_error:.2f}m, throttle={throttle}")
+        
+        return throttle
+    
     def _calculate_altitude_adjustment(self, vertical_error: float, 
                                      tof_down: Optional[float]) -> float:
         """Calculate altitude adjustment with enhanced TOF integration.
@@ -507,11 +577,13 @@ class TrackingController:
         Returns:
             Dictionary containing hover commands
         """
+        # SAFETY: Hover must maintain altitude using dynamic throttle
+        # Use base hover throttle as minimum
         return {
             'roll': 0,
             'pitch': 0,
             'yaw': 0,
-            'throttle': 0,  # Maintain current altitude
+            'throttle': self.base_hover_throttle,  # Dynamic hover throttle
             'distance': 0,
             'target_distance': self.target_distance,
             'tracking_active': False,
@@ -536,8 +608,12 @@ class TrackingController:
         }
     
     def _get_emergency_stop_commands(self, distance: float, 
-                                     tof_down: Optional[float]) -> Dict[str, Any]:
+                                     tof_down: Optional[float],
+                                     current_altitude: Optional[float] = None) -> Dict[str, Any]:
         """Get emergency stop commands when obstacle detected.
+        
+        CRITICAL: Always maintains hover throttle (50) to prevent falling.
+        Only allows climb if needed for ground avoidance, never descent.
         
         Args:
             distance: Current estimated distance to target
@@ -546,22 +622,25 @@ class TrackingController:
         Returns:
             Dictionary containing emergency stop commands
         """
-        # Calculate safe altitude adjustment
-        altitude_adjustment = 0
-        if tof_down is not None:
-            if tof_down < self.obstacle_threshold_down:
-                # Climb to avoid ground collision
-                altitude_adjustment = 30
-            elif tof_down < 1.0:
-                altitude_adjustment = 20
+        # SAFETY: Emergency stop MUST maintain altitude to prevent crash
+        # Use dynamic throttle calculation, but ensure minimum hover throttle
+        throttle_cmd = self._calculate_throttle(current_altitude, tof_down, 0.0)
         
-        throttle_cmd = int(np.clip(50 + altitude_adjustment, 0, 100))
+        # Emergency stop: ensure we never go below hover throttle
+        throttle_cmd = max(throttle_cmd, self.base_hover_throttle)
+        
+        # If ground too close, force climb
+        if tof_down is not None and tof_down < self.obstacle_threshold_down:
+            logger.warning(f"Emergency stop: Ground too close ({tof_down:.2f}m) - forcing climb")
+            throttle_cmd = max(throttle_cmd, self.base_hover_throttle + 30)
+        
+        logger.info(f"Emergency stop: Maintaining altitude (throttle={throttle_cmd}, tof_down={tof_down})")
         
         return {
             'roll': 0,  # No lateral movement
             'pitch': 0,  # No forward movement - EMERGENCY STOP
             'yaw': 0,   # No rotation
-            'throttle': throttle_cmd,  # Maintain or adjust altitude
+            'throttle': throttle_cmd,  # Maintain hover or climb (NEVER descend)
             'distance': distance,
             'target_distance': self.target_distance,
             'tracking_active': True,

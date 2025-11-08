@@ -278,8 +278,12 @@ class DroneClient:
                 tof_forward = self.tof_manager.get_forward_distance() if self.tof_manager else None
                 tof_down = self.tof_manager.get_down_distance() if self.tof_manager else None
                 
+                # Get current altitude from MAVLink telemetry
+                mavlink_telemetry = self.mavlink.get_telemetry()
+                current_altitude = mavlink_telemetry.get('relative_alt')  # Relative altitude in meters
+                
                 tracking_commands = self.tracking_controller.update(
-                    tracked_persons, tof_forward, tof_down
+                    tracked_persons, tof_forward, tof_down, current_altitude
                 )
                 
                 # Send RC commands ONLY if tracking is active

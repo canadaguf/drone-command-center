@@ -36,6 +36,8 @@ tracking:
   
   altitude:
     auto_adjust: true
+    target_altitude: 1.5  # Target altitude in meters (will be maintained dynamically)
+    base_hover_throttle: 50  # Base throttle for hover (calibrate for your drone - typically 40-60)
     min_height: 0.5
     max_height: 2.0
   
@@ -111,6 +113,10 @@ pid_gains:
     kp: 0.2
     ki: 0.0
     kd: 0.1
+  altitude:
+    kp: 15.0  # Proportional gain for altitude control (higher = more responsive)
+    ki: 0.5   # Integral gain (helps eliminate steady-state error)
+    kd: 5.0   # Derivative gain (dampens oscillations)
 
 # VLM configuration (optional)
 vlm:

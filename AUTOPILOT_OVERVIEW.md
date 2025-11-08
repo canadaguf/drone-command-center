@@ -288,6 +288,20 @@ if distance < 2.0m or obstacle_detected_forward:
 
 ## Safety Systems
 
+### ⚠️ CRITICAL SAFETY: Altitude Maintenance
+
+**IMPORTANT**: During emergency stop and hover, the system **ALWAYS maintains hover throttle (50)** to prevent the drone from falling. The throttle is never set below 50 (hover) except during intentional landing.
+
+**Throttle Values**:
+- `throttle = 0` → 1000 RC (motors off - **DANGEROUS**, causes fall)
+- `throttle = 50` → 1500 RC (hover - **SAFE**, maintains altitude)
+- `throttle = 100` → 2000 RC (maximum climb)
+
+**Emergency Stop Behavior**:
+- Horizontal movement: **BLOCKED** (roll=0, pitch=0, yaw=0)
+- Vertical movement: **MAINTAINED** (throttle ≥ 50)
+- Ground avoidance: Allows climb if too close to ground
+
 ### 1. Forward Obstacle Avoidance
 
 **Sensor**: Forward TOF (Channel 0)
@@ -296,7 +310,9 @@ if distance < 2.0m or obstacle_detected_forward:
 - Obstacle warning: < 1.5m
 
 **Actions**:
-- < 0.8m: Complete stop, all movement blocked
+- < 0.8m: Complete stop, all horizontal movement blocked
+  - **CRITICAL**: Throttle maintained at hover (50) or higher to prevent falling
+  - Only allows climb if ground too close, never descent
 - < 1.5m: Forward movement blocked, yaw-only mode
 
 ### 2. Altitude Safety
@@ -330,7 +346,7 @@ if distance < 2.0m or obstacle_detected_forward:
 | Use Case | Sensor | Threshold | Action | Status |
 |----------|--------|-----------|--------|--------|
 | **Obstacle Avoidance** | Forward TOF | 1.5m | Block forward movement | ✅ **ACTIVE** |
-| **Emergency Stop** | Forward TOF | 0.8m | Stop all movement | ✅ **ACTIVE** |
+| **Emergency Stop** | Forward TOF | 0.8m | Stop horizontal movement, maintain altitude | ✅ **ACTIVE** |
 | **Altitude Control** | Downward TOF | 0.5-3.0m | Adjust throttle | ✅ **ACTIVE** |
 | **Target Distance** | Forward TOF + Vision | 2.0-6.0m | PID control pitch | ✅ **ACTIVE** |
 | **Yaw-Only Mode** | Forward TOF + Vision | < 2.0m | Disable forward movement | ✅ **ACTIVE** |
