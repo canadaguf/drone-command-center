@@ -67,6 +67,11 @@ class TrackingController:
         self.safety_config = config.get('safety', {})
         self.yaw_only_threshold = self.safety_config.get('yaw_only_threshold', 2.0)  # meters
         
+        # Obstacle avoidance thresholds
+        self.obstacle_threshold_forward = self.safety_config.get('obstacle_threshold_forward', 1.5)  # meters
+        self.obstacle_threshold_down = self.safety_config.get('obstacle_threshold_down', 0.5)  # meters
+        self.emergency_stop_threshold = self.safety_config.get('emergency_stop_threshold', 0.8)  # meters
+        
         # Action history for oscillation prevention
         self.action_history = deque(maxlen=5)
         
@@ -221,12 +226,25 @@ class TrackingController:
         angle_yaw = (error_x / self.camera_width) * fov_h_rad
         angle_pitch = (error_y / self.camera_height) * fov_v_rad
         
-        # Determine distance
+        # Determine distance (prioritize TOF if available and valid)
         distance = self._estimate_distance(detection, tof_forward)
+        
+        # OBSTACLE AVOIDANCE: Check forward TOF sensor for obstacles
+        obstacle_detected_forward = False
+        if tof_forward is not None:
+            if tof_forward < self.emergency_stop_threshold:
+                # Emergency stop - obstacle very close
+                logger.warning(f"EMERGENCY STOP: Forward obstacle detected at {tof_forward:.2f}m")
+                return self._get_emergency_stop_commands(distance, tof_down)
+            elif tof_forward < self.obstacle_threshold_forward:
+                # Obstacle detected - prevent forward movement
+                obstacle_detected_forward = True
+                logger.warning(f"Obstacle detected forward at {tof_forward:.2f}m - preventing forward movement")
         
         # SAFETY: Yaw-only mode for close targets (SPF-inspired)
         # Prevents forward movement when target is too close to avoid collisions
-        if distance < self.yaw_only_threshold:
+        # OR when obstacle is detected by forward TOF sensor
+        if distance < self.yaw_only_threshold or obstacle_detected_forward:
             logger.warning(f"Target too close ({distance:.2f}m < {self.yaw_only_threshold}m) - YAW ONLY mode")
             
             # Only calculate yaw correction
@@ -280,7 +298,7 @@ class TrackingController:
         
         pid_outputs = self.pid_manager.update(pid_errors)
         
-        # Apply altitude adjustment
+        # Apply altitude adjustment (enhanced with downward TOF)
         altitude_adjustment = 0
         if self.auto_adjust_altitude:
             altitude_adjustment = self._calculate_altitude_adjustment(
@@ -292,6 +310,11 @@ class TrackingController:
         pitch_cmd = int(np.clip(pid_outputs['pitch'], -100, 100))
         yaw_cmd = int(np.clip(pid_outputs['yaw'], -100, 100))
         throttle_cmd = int(np.clip(50 + altitude_adjustment, 0, 100))
+        
+        # OBSTACLE AVOIDANCE: Prevent forward movement if obstacle detected
+        if obstacle_detected_forward and pitch_cmd > 0:
+            logger.debug(f"Blocking forward movement (pitch={pitch_cmd}) due to obstacle at {tof_forward:.2f}m")
+            pitch_cmd = 0  # Block forward movement
         
         # Oscillation prevention: check action history
         if len(self.action_history) >= 2:
@@ -334,15 +357,19 @@ class TrackingController:
                           tof_forward: Optional[float]) -> float:
         """Estimate distance to target with improved accuracy (SPF-inspired).
         
+        Prioritizes TOF sensor reading when available and valid.
+        
         Args:
             detection: Target detection
-            tof_forward: Forward TOF distance
+            tof_forward: Forward TOF distance in meters
             
         Returns:
             Estimated distance in meters
         """
-        # Use TOF if available and within range (most accurate)
-        if tof_forward is not None and 0.5 <= tof_forward <= 4.0:
+        # Use TOF if available and within valid range (most accurate)
+        # TOF sensors are most reliable between 0.3m and 4.0m
+        if tof_forward is not None and 0.3 <= tof_forward <= 4.0:
+            logger.debug(f"Using TOF distance: {tof_forward:.2f}m")
             return tof_forward
         
         # Estimate from bbox size with improved calibration
@@ -409,25 +436,47 @@ class TrackingController:
     
     def _calculate_altitude_adjustment(self, vertical_error: float, 
                                      tof_down: Optional[float]) -> float:
-        """Calculate altitude adjustment.
+        """Calculate altitude adjustment with enhanced TOF integration.
+        
+        Uses downward TOF sensor for precise altitude control and obstacle avoidance.
         
         Args:
-            vertical_error: Vertical pixel error
-            tof_down: Downward TOF distance
+            vertical_error: Vertical pixel error (positive = target below center)
+            tof_down: Downward TOF distance in meters
             
         Returns:
-            Altitude adjustment (-50 to 50)
+            Altitude adjustment (-50 to 50, positive = climb, negative = descend)
         """
-        # Simple altitude adjustment based on vertical error
+        # Base adjustment from visual tracking (target position in frame)
         adjustment = -vertical_error * 0.1  # Scale factor
+        
+        # ENHANCED: Use downward TOF sensor for altitude control
+        if tof_down is not None:
+            # Check for ground/obstacle below
+            if tof_down < self.obstacle_threshold_down:
+                # Emergency: too close to ground/obstacle - climb immediately
+                logger.warning(f"Ground too close ({tof_down:.2f}m) - climbing")
+                adjustment = 50  # Maximum climb
+            elif tof_down < 0.8:
+                # Close to ground - prioritize climbing
+                adjustment = max(adjustment, 30)
+            elif tof_down < 1.2:
+                # Low altitude - gentle climb preference
+                adjustment = max(adjustment, 10)
+            elif tof_down > 3.0:
+                # High altitude - allow descent if needed
+                adjustment = min(adjustment, 0)
+            
+            # Maintain minimum safe altitude
+            if tof_down < self.min_height:
+                adjustment = max(adjustment, 20)
+            
+            # Respect maximum altitude
+            if tof_down > self.max_height:
+                adjustment = min(adjustment, -20)
         
         # Apply bounds
         adjustment = max(-50, min(50, adjustment))
-        
-        # Check for obstacles below
-        if tof_down is not None and tof_down < 2.0:
-            # Obstacle detected below, climb
-            adjustment = max(adjustment, 20)
         
         return adjustment
     
@@ -484,6 +533,39 @@ class TrackingController:
             'target_distance': self.target_distance,
             'tracking_active': False,
             'land': True
+        }
+    
+    def _get_emergency_stop_commands(self, distance: float, 
+                                     tof_down: Optional[float]) -> Dict[str, Any]:
+        """Get emergency stop commands when obstacle detected.
+        
+        Args:
+            distance: Current estimated distance to target
+            tof_down: Downward TOF distance
+            
+        Returns:
+            Dictionary containing emergency stop commands
+        """
+        # Calculate safe altitude adjustment
+        altitude_adjustment = 0
+        if tof_down is not None:
+            if tof_down < self.obstacle_threshold_down:
+                # Climb to avoid ground collision
+                altitude_adjustment = 30
+            elif tof_down < 1.0:
+                altitude_adjustment = 20
+        
+        throttle_cmd = int(np.clip(50 + altitude_adjustment, 0, 100))
+        
+        return {
+            'roll': 0,  # No lateral movement
+            'pitch': 0,  # No forward movement - EMERGENCY STOP
+            'yaw': 0,   # No rotation
+            'throttle': throttle_cmd,  # Maintain or adjust altitude
+            'distance': distance,
+            'target_distance': self.target_distance,
+            'tracking_active': True,
+            'emergency_stop': True  # Flag for telemetry/logging
         }
     
     def get_status(self) -> Dict[str, Any]:

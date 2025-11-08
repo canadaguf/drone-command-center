@@ -46,6 +46,9 @@ tracking:
   # Safety configuration (SPF-inspired improvements)
   safety:
     yaw_only_threshold: 2.0  # Distance (meters) below which only yaw commands are sent (no forward movement)
+    obstacle_threshold_forward: 1.5  # Forward obstacle detection threshold (meters) - prevents forward movement
+    obstacle_threshold_down: 0.5  # Downward obstacle/ground detection threshold (meters) - triggers climb
+    emergency_stop_threshold: 0.8  # Emergency stop threshold (meters) - immediate stop if obstacle closer
 
 # TOF sensors configuration
 tof_sensors:

@@ -17,6 +17,10 @@ onnxruntime==1.16.3
 aiohttp==3.9.1
 google-generativeai==0.3.2
 
+# Hardware/Adafruit libraries (for TOF sensor testing)
+adafruit-blinka
+adafruit-circuitpython-vl53l1x
+
 # Development dependencies
 pytest==7.4.3
 pytest-asyncio==0.21.1

@@ -1,7 +1,7 @@
 """
 TOF sensor manager with TCA9548A I2C multiplexer support.
 Supports 2-8 VL53L1X sensors for scalable obstacle avoidance.
-Based on test_snippets/worked_best/tof_test_1.py
+Based on test_snippets/worked_best/tof_test_multiplexer.py
 """
 
 import time
@@ -9,7 +9,9 @@ import logging
 import threading
 from typing import Dict, Any, List, Optional, Tuple
 import smbus2
-import RPi.GPIO as GPIO
+import board
+import busio
+import adafruit_vl53l1x
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +48,17 @@ class TOFManager:
             True if initialization successful, False otherwise
         """
         try:
-            # Initialize I2C bus
+            # Initialize I2C bus for multiplexer control (smbus2)
             self.bus = smbus2.SMBus(1)  # Use I2C bus 1
-            logger.info("I2C bus initialized")
+            logger.info("I2C bus (smbus2) initialized for multiplexer control")
+            
+            # Initialize I2C bus for Adafruit library (busio)
+            try:
+                self.i2c_busio = busio.I2C(board.SCL, board.SDA)
+                logger.info("I2C bus (busio) initialized for Adafruit library")
+            except Exception as e:
+                logger.error(f"Failed to initialize busio I2C: {e}")
+                return False
             
             # Initialize each sensor
             for sensor_config in self.sensors_config:
@@ -62,13 +72,18 @@ class TOFManager:
                     channel=channel,
                     direction=direction,
                     max_range=max_range,
-                    bus=self.bus,
+                    smbus=self.bus,
+                    i2c_busio=self.i2c_busio,
                     multiplexer_address=self.multiplexer_address
                 )
                 
                 if sensor.initialize():
                     self.sensors[name] = sensor
-                    self.last_readings[name] = None
+                    self.last_readings[name] = {
+                        'distance': None,
+                        'timestamp': time.time(),
+                        'valid': False
+                    }
                     logger.info(f"Initialized TOF sensor: {name} (channel {channel}, {direction})")
                 else:
                     logger.error(f"Failed to initialize TOF sensor: {name}")
@@ -82,6 +97,8 @@ class TOFManager:
             
         except Exception as e:
             logger.error(f"Failed to initialize TOF manager: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return False
     
     def start_reading(self) -> bool:
@@ -240,15 +257,35 @@ class TOFManager:
     def cleanup(self) -> None:
         """Cleanup resources."""
         self.stop_reading()
+        
+        # Stop ranging on all sensors
+        for name, sensor in self.sensors.items():
+            try:
+                sensor.stop_ranging()
+            except Exception as e:
+                logger.warning(f"Error stopping sensor {name}: {e}")
+        
+        # Close I2C buses
         if self.bus:
-            self.bus.close()
+            try:
+                self.bus.close()
+            except Exception as e:
+                logger.warning(f"Error closing smbus: {e}")
+        
+        if hasattr(self, 'i2c_busio') and self.i2c_busio:
+            try:
+                self.i2c_busio.deinit()
+            except Exception as e:
+                logger.warning(f"Error closing busio I2C: {e}")
+        
         logger.info("TOF manager cleaned up")
 
 class TOFSensor:
     """Individual TOF sensor with multiplexer support."""
     
     def __init__(self, name: str, channel: int, direction: str, 
-                 max_range: float, bus: smbus2.SMBus, multiplexer_address: int):
+                 max_range: float, smbus: smbus2.SMBus, i2c_busio: busio.I2C,
+                 multiplexer_address: int):
         """Initialize TOF sensor.
         
         Args:
@@ -256,18 +293,21 @@ class TOFSensor:
             channel: Multiplexer channel
             direction: Sensor direction ('front', 'down', etc.)
             max_range: Maximum range in meters
-            bus: I2C bus instance
+            smbus: SMBus instance for multiplexer control
+            i2c_busio: Busio I2C instance for Adafruit library
             multiplexer_address: Multiplexer I2C address
         """
         self.name = name
         self.channel = channel
         self.direction = direction
         self.max_range = max_range
-        self.bus = bus
+        self.smbus = smbus
+        self.i2c_busio = i2c_busio
         self.multiplexer_address = multiplexer_address
         
         # VL53L1X parameters
         self.vl53l1x_address = 0x29
+        self.adafruit_sensor = None
         self.initialized = False
     
     def initialize(self) -> bool:
@@ -279,15 +319,18 @@ class TOFSensor:
         try:
             # Select multiplexer channel
             self._select_channel()
+            time.sleep(0.1)  # Give sensor time to respond after channel switch
             
-            # Check if sensor is present
-            if not self._check_sensor_presence():
-                logger.error(f"Sensor {self.name} not found on channel {self.channel}")
-                return False
-            
-            # Initialize VL53L1X sensor
-            if not self._init_vl53l1x():
-                logger.error(f"Failed to initialize VL53L1X on {self.name}")
+            # Initialize VL53L1X sensor using Adafruit library
+            try:
+                self.adafruit_sensor = adafruit_vl53l1x.VL53L1X(
+                    self.i2c_busio, 
+                    address=self.vl53l1x_address
+                )
+                self.adafruit_sensor.start_ranging()
+                logger.info(f"VL53L1X sensor {self.name} started ranging")
+            except Exception as e:
+                logger.error(f"Failed to initialize Adafruit VL53L1X on {self.name}: {e}")
                 return False
             
             self.initialized = True
@@ -296,6 +339,8 @@ class TOFSensor:
             
         except Exception as e:
             logger.error(f"Failed to initialize sensor {self.name}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return False
     
     def _select_channel(self) -> None:
@@ -303,49 +348,21 @@ class TOFSensor:
         try:
             # TCA9548A channel selection (1 << channel)
             channel_mask = 1 << self.channel
-            self.bus.write_byte(self.multiplexer_address, channel_mask)
+            self.smbus.write_byte(self.multiplexer_address, channel_mask)
             time.sleep(0.01)  # Small delay for multiplexer switching
         except Exception as e:
             logger.error(f"Failed to select channel {self.channel}: {e}")
             raise
     
-    def _check_sensor_presence(self) -> bool:
-        """Check if sensor is present on current channel.
-        
-        Returns:
-            True if sensor found, False otherwise
-        """
-        try:
-            # Try to read from VL53L1X address
-            self.bus.read_byte(self.vl53l1x_address)
-            return True
-        except:
-            return False
-    
-    def _init_vl53l1x(self) -> bool:
-        """Initialize VL53L1X sensor.
-        
-        Returns:
-            True if initialization successful, False otherwise
-        """
-        try:
-            # VL53L1X initialization sequence
-            # This is a simplified version - full implementation would include
-            # proper VL53L1X register configuration
-            
-            # Reset sensor
-            self.bus.write_byte_data(self.vl53l1x_address, 0x00, 0x00)
-            time.sleep(0.01)
-            
-            # Set up sensor (simplified)
-            # In a full implementation, you would configure all necessary registers
-            # For now, we'll assume the sensor is pre-configured
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"VL53L1X initialization failed: {e}")
-            return False
+    def stop_ranging(self) -> None:
+        """Stop ranging on sensor."""
+        if self.adafruit_sensor:
+            try:
+                self._select_channel()
+                time.sleep(0.01)
+                self.adafruit_sensor.stop_ranging()
+            except Exception as e:
+                logger.warning(f"Error stopping ranging on {self.name}: {e}")
     
     def read_distance(self) -> Optional[float]:
         """Read distance from sensor.
@@ -353,29 +370,32 @@ class TOFSensor:
         Returns:
             Distance in meters, None if reading failed
         """
-        if not self.initialized:
+        if not self.initialized or not self.adafruit_sensor:
             return None
         
         try:
-            # Select channel
+            # Select multiplexer channel
             self._select_channel()
+            time.sleep(0.02)  # Small delay after channel switch
             
-            # Read distance from VL53L1X
-            # This is a simplified implementation
-            # Full implementation would read from proper VL53L1X registers
+            # Check if data is ready
+            if not self.adafruit_sensor.data_ready:
+                return None
             
-            # For now, return a mock reading
-            # In real implementation, you would:
-            # 1. Trigger measurement
-            # 2. Wait for completion
-            # 3. Read result registers
-            # 4. Convert to meters
+            # Read distance (returns value in centimeters)
+            distance_cm = self.adafruit_sensor.distance
             
-            # Mock reading (replace with actual VL53L1X reading)
-            import random
-            distance = random.uniform(0.5, self.max_range)
+            # Convert to meters
+            distance_m = distance_cm / 100.0
             
-            return distance
+            # Validate reading (sensor can return 0 or very large values when out of range)
+            if distance_cm <= 0 or distance_cm > (self.max_range * 100):
+                return None
+            
+            # Clear interrupt for next reading
+            self.adafruit_sensor.clear_interrupt()
+            
+            return distance_m
             
         except Exception as e:
             logger.error(f"Failed to read distance from {self.name}: {e}")
