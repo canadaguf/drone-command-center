@@ -118,6 +118,24 @@ pid_gains:
     ki: 0.5   # Integral gain (helps eliminate steady-state error)
     kd: 5.0   # Derivative gain (dampens oscillations)
 
+# Flight mode configuration
+flight_modes:
+  takeoff:
+    throttle_start: 40      # Starting throttle percentage for gradual takeoff
+    throttle_increment: 2   # Throttle increase per step (percentage)
+    throttle_max: 70        # Maximum throttle during takeoff (percentage)
+    update_interval: 0.1    # Update interval in seconds (10 Hz)
+  
+  landing:
+    throttle_decrement: 2           # Throttle decrease per step (percentage)
+    detection_distance: 0.06        # Distance to consider landed (6cm in meters)
+    detection_tolerance: 0.006      # Tolerance for landing detection (10% = 0.6cm)
+    update_interval: 0.1            # Update interval in seconds (10 Hz)
+  
+  stabilization:
+    hover_throttle: 50      # Hover throttle percentage (maintains altitude)
+    update_interval: 0.1    # Update interval in seconds (10 Hz)
+
 # VLM configuration (optional)
 vlm:
   enabled: false

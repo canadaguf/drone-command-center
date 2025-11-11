@@ -109,6 +109,11 @@ class MAVLinkController:
             return False
         
         try:
+            # Clear any active RC override before disarming
+            # This ensures clean disarm operation
+            logger.info("Clearing RC override before disarming...")
+            self.clear_rc_override()
+            
             logger.info("Disarming drone...")
             # Use the same method as basic_arm.py which works
             self.master.arducopter_disarm()
@@ -127,7 +132,7 @@ class MAVLinkController:
         """Set flight mode.
         
         Args:
-            mode_name: Flight mode name (e.g., 'GUIDED', 'LAND', 'RTL')
+            mode_name: Flight mode name (e.g., 'GUIDED', 'LAND', 'RTL', 'LOITER')
             
         Returns:
             True if command sent successfully, False otherwise
@@ -147,6 +152,35 @@ class MAVLinkController:
             return True
         except Exception as e:
             logger.error(f"Failed to set mode {mode_name}: {e}")
+            return False
+    
+    def set_mode_loiter(self) -> bool:
+        """Set flight mode to LOITER.
+        
+        LOITER mode maintains current position and altitude automatically.
+        The pilot can control position with sticks, but when released, 
+        the drone will hold position.
+        
+        Returns:
+            True if command sent successfully, False otherwise
+        """
+        return self.set_mode('LOITER')
+    
+    def is_armed(self) -> bool:
+        """Check if drone is armed.
+        
+        Returns:
+            True if armed, False otherwise
+        """
+        if not self.connected:
+            return False
+        
+        try:
+            # Get latest telemetry which includes armed status
+            telemetry = self.get_telemetry()
+            return telemetry.get('armed', False)
+        except Exception as e:
+            logger.error(f"Error checking armed status: {e}")
             return False
     
     def clear_rc_override(self) -> bool:

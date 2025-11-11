@@ -192,6 +192,10 @@ class Config:
         """Get PID configuration."""
         return self.get('pid_gains', {})
     
+    def get_flight_mode_config(self) -> Dict[str, Any]:
+        """Get flight mode configuration."""
+        return self.get('flight_modes', {})
+    
     def get_vlm_config(self) -> Dict[str, Any]:
         """Get VLM configuration."""
         return self.get('vlm', {})

@@ -10,7 +10,7 @@ const initialStatus = {
   disarm: 'idle',
   liftoff: 'idle',
   landing: 'idle',
-  freeze: 'idle',
+  loiter: 'idle',
 };
 
 export default function ControlPanel() {
@@ -109,10 +109,10 @@ export default function ControlPanel() {
             {getStatusIndicator('landing')}
           </div>
           <div style={buttonWithStatusStyle}>
-            <button className="control-btn" onClick={() => handleCommand('freeze', 'freeze')}>
-              Freeze
+            <button className="control-btn" onClick={() => handleCommand('freeze', 'loiter')}>
+              Loiter
             </button>
-            {getStatusIndicator('freeze')}
+            {getStatusIndicator('loiter')}
           </div>
         </div>
       </div>

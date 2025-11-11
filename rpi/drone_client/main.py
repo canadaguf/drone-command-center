@@ -16,6 +16,7 @@ from .config import Config
 from .controllers.mavlink_controller import MAVLinkController
 from .controllers.pid_controller import PIDManager
 from .controllers.tracking_controller import TrackingController
+from .controllers.flight_mode_manager import FlightModeManager, FlightMode
 from .vision.yolo_detector import YOLODetector
 from .vision.person_tracker import PersonTracker
 from .vision.depth_estimator import DepthEstimator
@@ -54,6 +55,7 @@ class DroneClient:
         self.mavlink = None
         self.pid_manager = None
         self.tracking_controller = None
+        self.flight_mode_manager = None
         self.yolo_detector = None
         self.person_tracker = None
         self.depth_estimator = None
@@ -74,6 +76,7 @@ class DroneClient:
         self.telemetry_loop_task = None
         self.command_loop_task = None
         self.safety_loop_task = None
+        self.flight_mode_loop_task = None
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -171,6 +174,14 @@ class DroneClient:
             self.lost_target_handler = LostTargetHandler(tracking_config.get('lost_target', {}))
             self.battery_monitor = BatteryMonitor(safety_config.get('battery', {}))
             
+            # Initialize flight mode manager
+            flight_mode_config = self.config.get_flight_mode_config()
+            self.flight_mode_manager = FlightModeManager(flight_mode_config)
+            self.flight_mode_manager.set_callbacks(
+                on_mode_change=self._on_flight_mode_change,
+                on_landed=self._on_landed
+            )
+            
             # Setup callbacks
             self._setup_callbacks()
             
@@ -232,6 +243,7 @@ class DroneClient:
             self._telemetry_loop(),
             self._command_loop(),
             self._safety_loop(),
+            self._flight_mode_loop(),
             self.websocket.start()
         ]
         
@@ -287,8 +299,7 @@ class DroneClient:
                 )
                 
                 # Send RC commands ONLY if tracking is active
-                # When hovering (tracking stopped), GUIDED mode handles position hold
-                # RC override is not needed and would interfere with GUIDED mode
+                # When not tracking, send stabilization commands (zero roll/pitch, hover throttle)
                 if tracking_commands.get('tracking_active', False):
                     self.mavlink.send_rc_override(
                         tracking_commands['roll'],
@@ -296,8 +307,17 @@ class DroneClient:
                         tracking_commands['yaw'],
                         tracking_commands['throttle']
                     )
-                # When not tracking, GUIDED mode maintains position automatically
-                # No RC override needed - flight controller handles hover
+                else:
+                    # Not tracking - send stabilization commands to prevent falling
+                    # Always maintain hover throttle and zero roll/pitch for stability
+                    if self.flight_mode_manager:
+                        stabilization = self.flight_mode_manager.get_stabilization_commands()
+                        self.mavlink.send_rc_override(
+                            stabilization['roll'],
+                            stabilization['pitch'],
+                            stabilization['yaw'],
+                            stabilization['throttle']
+                        )
                 
                 # Send detections to backend
                 await self.websocket.send_detections(tracked_persons, frame)
@@ -386,13 +406,92 @@ class DroneClient:
                 # Check for safety actions
                 if self.battery_monitor.is_auto_land_triggered():
                     logger.critical("Battery auto-land triggered")
-                    self.mavlink.request_land()
+                    # Use flight mode manager for gradual landing
+                    if self.flight_mode_manager:
+                        self.flight_mode_manager.set_mode(FlightMode.LANDING)
                 
                 await asyncio.sleep(0.2)  # 5 Hz
                 
             except Exception as e:
                 logger.error(f"Error in safety loop: {e}")
                 await asyncio.sleep(0.2)
+    
+    async def _flight_mode_loop(self) -> None:
+        """Flight mode state management loop."""
+        logger.info("Flight mode loop started")
+        
+        if not self.flight_mode_manager:
+            logger.error("Flight mode manager not initialized")
+            return
+        
+        while self.running:
+            try:
+                # Get current flight mode
+                current_mode = self.flight_mode_manager.get_mode()
+                
+                # Get ToF sensor readings
+                tof_down = self.tof_manager.get_down_distance() if self.tof_manager else None
+                
+                # Get current altitude from MAVLink
+                mavlink_telemetry = self.mavlink.get_telemetry()
+                current_altitude = mavlink_telemetry.get('relative_alt')
+                
+                # Handle different flight modes
+                if current_mode == FlightMode.TAKING_OFF:
+                    # Gradual takeoff sequence
+                    takeoff_commands = self.flight_mode_manager.update_takeoff(
+                        tof_down, current_altitude
+                    )
+                    if takeoff_commands['complete']:
+                        # Takeoff complete, transition to flying
+                        logger.info("Takeoff complete - entering flying mode")
+                    else:
+                        # Send takeoff throttle commands
+                        self.mavlink.send_rc_override(
+                            takeoff_commands['roll'],
+                            takeoff_commands['pitch'],
+                            takeoff_commands['yaw'],
+                            takeoff_commands['throttle']
+                        )
+                
+                elif current_mode == FlightMode.LANDING:
+                    # Gradual landing sequence
+                    landing_commands = self.flight_mode_manager.update_landing(
+                        tof_down, current_altitude
+                    )
+                    if landing_commands['landed']:
+                        # Landing detected - disarm motors
+                        logger.info("Landing detected - disarming motors")
+                        self.mavlink.disarm()
+                    else:
+                        # Send landing throttle commands
+                        self.mavlink.send_rc_override(
+                            landing_commands['roll'],
+                            landing_commands['pitch'],
+                            landing_commands['yaw'],
+                            landing_commands['throttle']
+                        )
+                
+                elif current_mode == FlightMode.LOITERING:
+                    # Loiter mode - send stabilization commands
+                    loiter_commands = self.flight_mode_manager.get_loiter_commands()
+                    self.mavlink.send_rc_override(
+                        loiter_commands['roll'],
+                        loiter_commands['pitch'],
+                        loiter_commands['yaw'],
+                        loiter_commands['throttle']
+                    )
+                
+                elif current_mode in [FlightMode.FLYING, FlightMode.IDLE]:
+                    # In flying/idle mode, stabilization is handled by vision loop
+                    # or flight controller's built-in modes
+                    pass
+                
+                await asyncio.sleep(0.1)  # 10 Hz for flight mode updates
+                
+            except Exception as e:
+                logger.error(f"Error in flight mode loop: {e}")
+                await asyncio.sleep(0.1)
     
     async def shutdown(self) -> None:
         """Shutdown drone client."""
@@ -436,29 +535,50 @@ class DroneClient:
         
         try:
             if command == 'arm':
+                # Clear RC override before arming (handled in mavlink.arm())
                 success = self.mavlink.arm()
+                if success:
+                    if self.flight_mode_manager:
+                        self.flight_mode_manager.set_mode(FlightMode.ARMING)
                 if not success:
                     logger.error("Arm command failed - check MAVLink connection")
             elif command == 'disarm':
+                # Only disarm if landed (ToF < 6.6cm) or if explicitly requested
+                tof_down = self.tof_manager.get_down_distance() if self.tof_manager else None
+                if tof_down is not None:
+                    landing_max = 0.06 + 0.006  # 6.6cm
+                    if tof_down > landing_max:
+                        logger.warning(f"Disarm requested but drone not landed (ToF: {tof_down:.3f}m)")
+                        logger.warning("Disarm will proceed anyway - use with caution")
+                
                 success = self.mavlink.disarm()
+                if success:
+                    if self.flight_mode_manager:
+                        self.flight_mode_manager.set_mode(FlightMode.IDLE)
                 if not success:
                     logger.error("Disarm command failed - check MAVLink connection")
             elif command == 'takeoff':
-                # Get takeoff altitude from config (default 2.0m)
-                mavlink_config = self.config.get_mavlink_config()
-                takeoff_altitude = mavlink_config.get('takeoff_altitude', 2.0)
-                logger.info(f"Takeoff requested to {takeoff_altitude}m altitude")
-                success = self.mavlink.request_takeoff(takeoff_altitude)
-                if not success:
-                    logger.error("Takeoff command failed - check MAVLink connection")
+                # Start gradual takeoff sequence via flight mode manager
+                logger.info("Starting gradual takeoff sequence")
+                if self.flight_mode_manager:
+                    self.flight_mode_manager.set_mode(FlightMode.TAKING_OFF)
+                else:
+                    logger.error("Flight mode manager not initialized")
             elif command == 'land':
-                success = self.mavlink.request_land()
-                if not success:
-                    logger.error("Land command failed - check MAVLink connection")
+                # Start gradual landing sequence via flight mode manager
+                logger.info("Starting gradual landing sequence")
+                if self.flight_mode_manager:
+                    self.flight_mode_manager.set_mode(FlightMode.LANDING)
+                else:
+                    logger.error("Flight mode manager not initialized")
             elif command == 'freeze':
-                success = self.mavlink.set_mode('GUIDED')
+                # Set LOITER mode (not GUIDED) - maintains position and altitude
+                success = self.mavlink.set_mode_loiter()
+                if success:
+                    if self.flight_mode_manager:
+                        self.flight_mode_manager.set_mode(FlightMode.LOITERING)
                 if not success:
-                    logger.error("Freeze command failed - check MAVLink connection")
+                    logger.error("Loiter command failed - check MAVLink connection")
             elif command == 'follow':
                 target_id = payload.get('target_id')
                 if self.tracking_controller:
@@ -513,7 +633,18 @@ class DroneClient:
     def _on_target_land(self) -> None:
         """Handle target land."""
         logger.warning("Target lost too long - initiating landing")
-        self.mavlink.request_land()
+        # Use flight mode manager for gradual landing
+        if self.flight_mode_manager:
+            self.flight_mode_manager.set_mode(FlightMode.LANDING)
+    
+    def _on_flight_mode_change(self, old_mode: FlightMode, new_mode: FlightMode) -> None:
+        """Handle flight mode change."""
+        logger.info(f"Flight mode changed: {old_mode.value} -> {new_mode.value}")
+    
+    def _on_landed(self) -> None:
+        """Handle landing detection."""
+        logger.info("Landing detected - disarming motors")
+        self.mavlink.disarm()
     
     def _on_battery_warning(self, battery_percent: float) -> None:
         """Handle battery warning."""
