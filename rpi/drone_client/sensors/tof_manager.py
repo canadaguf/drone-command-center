@@ -38,6 +38,12 @@ class TOFManager:
         self.reading_thread = None
         self.running = False
         
+        # Circuit breaker for sensors with persistent failures
+        self.sensor_circuit_breaker = {}  # sensor_name -> resume_timestamp
+        self.sensor_error_counts = {}  # Track errors for circuit breaker
+        self.circuit_breaker_threshold = 10  # Pause after 10 consecutive errors
+        self.max_circuit_breaker_time = 5.0  # Maximum pause time (seconds)
+        
         # Initialize sensors
         self._initialize_sensors()
     
@@ -53,9 +59,10 @@ class TOFManager:
             logger.info("I2C bus (smbus2) initialized for multiplexer control")
             
             # Initialize I2C bus for Adafruit library (busio)
+            # Use 100kHz instead of default 400kHz for better EMI tolerance
             try:
-                self.i2c_busio = busio.I2C(board.SCL, board.SDA)
-                logger.info("I2C bus (busio) initialized for Adafruit library")
+                self.i2c_busio = busio.I2C(board.SCL, board.SDA, frequency=100000)
+                logger.info("I2C bus (busio) initialized at 100kHz for better EMI tolerance")
             except Exception as e:
                 logger.error(f"Failed to initialize busio I2C: {e}")
                 return False
@@ -85,6 +92,7 @@ class TOFManager:
                         'timestamp': time.time(),
                         'valid': False
                     }
+                    self.sensor_error_counts[name] = 0  # Initialize error count
                     logger.info(f"Initialized TOF sensor: {name} (channel {channel}, {direction})")
                 else:
                     logger.error(f"Failed to initialize TOF sensor: {name}")
@@ -134,30 +142,76 @@ class TOFManager:
         while self.running:
             try:
                 with self.bus_lock:
+                    current_time = time.time()
                     for name, sensor in self.sensors.items():
+                        # Check circuit breaker
+                        if name in self.sensor_circuit_breaker:
+                            if current_time < self.sensor_circuit_breaker[name]:
+                                # Still in circuit breaker - skip this sensor
+                                continue
+                            else:
+                                # Circuit breaker expired - remove it
+                                del self.sensor_circuit_breaker[name]
+                                self.sensor_error_counts[name] = 0
+                                logger.info(f"Circuit breaker cleared for sensor {name}")
+                        
                         try:
                             distance = sensor.read_distance()
                             if distance is not None:
+                                # Successful read - reset error count
+                                self.sensor_error_counts[name] = 0
+                                # Update adaptive delay based on success
+                                sensor.consecutive_failures = 0
                                 self.last_readings[name] = {
                                     'distance': distance,
                                     'timestamp': time.time(),
                                     'valid': True
                                 }
                             else:
+                                # Failed read - increment error count
+                                self.sensor_error_counts[name] = self.sensor_error_counts.get(name, 0) + 1
+                                sensor.consecutive_failures = self.sensor_error_counts[name]
+                                
                                 # Mark as invalid but keep last valid reading
                                 if name in self.last_readings:
                                     self.last_readings[name]['valid'] = False
+                                
+                                # Activate circuit breaker if too many errors
+                                if self.sensor_error_counts[name] >= self.circuit_breaker_threshold:
+                                    # Exponential backoff: 1s, 2s, 4s, up to max
+                                    pause_time = min(2.0 ** (self.sensor_error_counts[name] - self.circuit_breaker_threshold), 
+                                                   self.max_circuit_breaker_time)
+                                    self.sensor_circuit_breaker[name] = current_time + pause_time
+                                    logger.warning(f"Sensor {name}: Circuit breaker activated for {pause_time:.1f}s "
+                                                f"({self.sensor_error_counts[name]} consecutive errors)")
+                                
                         except Exception as e:
-                            # Check if it's EAGAIN (I2C busy) - don't mark as error
+                            # Check if it's EAGAIN (I2C busy) - don't mark as error immediately
                             import errno
                             if isinstance(e, OSError) and (e.errno == errno.EAGAIN or e.errno == 11):
-                                # EAGAIN is expected during motor operation - don't log as error
-                                # Keep last valid reading
-                                pass
+                                # EAGAIN is expected during motor operation
+                                # Increment error count but don't log as error
+                                self.sensor_error_counts[name] = self.sensor_error_counts.get(name, 0) + 1
+                                sensor.consecutive_failures = self.sensor_error_counts.get(name, 0)
+                                
+                                # Activate circuit breaker if too many EAGAIN errors
+                                if self.sensor_error_counts[name] >= self.circuit_breaker_threshold:
+                                    pause_time = min(2.0 ** (self.sensor_error_counts[name] - self.circuit_breaker_threshold), 
+                                                   self.max_circuit_breaker_time)
+                                    self.sensor_circuit_breaker[name] = current_time + pause_time
+                                    logger.debug(f"Sensor {name}: Circuit breaker (EAGAIN) for {pause_time:.1f}s")
                             else:
                                 logger.error(f"Error reading sensor {name}: {e}")
+                                self.sensor_error_counts[name] = self.sensor_error_counts.get(name, 0) + 1
                                 if name in self.last_readings:
                                     self.last_readings[name]['valid'] = False
+                                
+                                # Activate circuit breaker for non-EAGAIN errors too
+                                if self.sensor_error_counts[name] >= self.circuit_breaker_threshold:
+                                    pause_time = min(2.0 ** (self.sensor_error_counts[name] - self.circuit_breaker_threshold), 
+                                                   self.max_circuit_breaker_time)
+                                    self.sensor_circuit_breaker[name] = current_time + pause_time
+                                    logger.warning(f"Sensor {name}: Circuit breaker activated for {pause_time:.1f}s")
                 
                 time.sleep(0.1)  # 10 Hz reading rate
                 
@@ -321,8 +375,10 @@ class TOFSensor:
         self.initialized = False
         
         # I2C retry configuration
-        self.max_i2c_retries = 3
-        self.i2c_retry_delay = 0.01  # Start with 10ms delay
+        self.max_i2c_retries = 5  # Increased from 3 to 5
+        self.i2c_retry_delay = 0.02  # Start with 20ms delay (increased from 10ms)
+        self.base_retry_delay = 0.02  # Base delay for adaptive backoff
+        self.consecutive_failures = 0  # Track consecutive failures for adaptive delays
     
     def initialize(self) -> bool:
         """Initialize sensor.
@@ -386,10 +442,14 @@ class TOFSensor:
                 # Check if it's EAGAIN (errno 11) - Resource temporarily unavailable
                 if e.errno == errno.EAGAIN or e.errno == 11:
                     last_error = e
-                    # Exponential backoff: 10ms, 20ms, 40ms
-                    delay = self.i2c_retry_delay * (2 ** attempt)
+                    # Adaptive exponential backoff: base delay increases with consecutive failures
+                    # More failures = longer delays (handles high EMI better)
+                    adaptive_base = self.base_retry_delay * (1 + self.consecutive_failures * 0.1)
+                    adaptive_base = min(adaptive_base, 0.1)  # Cap at 100ms
+                    delay = adaptive_base * (2 ** attempt)
                     time.sleep(delay)
-                    logger.debug(f"I2C EAGAIN on channel {self.channel} (attempt {attempt + 1}/{self.max_i2c_retries}), retrying in {delay*1000:.1f}ms")
+                    logger.debug(f"I2C EAGAIN on channel {self.channel} (attempt {attempt + 1}/{self.max_i2c_retries}), "
+                               f"retrying in {delay*1000:.1f}ms (failures: {self.consecutive_failures})")
                     continue
                 else:
                     # Other I2C error - don't retry

@@ -3,6 +3,9 @@ source /home/ilya/drone_client/venv/bin/activate
 # Navigate to project
 cd ~/drone-command-center/rpi
 
+cd test_snippets/worked_best
+
+
 # Run the client
 python -m drone_client.main
 
