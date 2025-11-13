@@ -28,9 +28,9 @@ class YOLODetector:
         self.confidence_threshold = confidence_threshold
         self.nms_threshold = nms_threshold
         
-        # Target classes (person only for person tracking)
-        self.target_classes = [0]  # Only detect persons
-        self.class_names = {0: "person"}
+        # Target classes (chair for safe testing)
+        self.target_classes = [0]  # Only detect chairs
+        self.class_names = {0: "chair"}
         
         # Load model
         self.net = None

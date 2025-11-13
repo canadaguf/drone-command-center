@@ -37,8 +37,8 @@ class PersonTracker:
         Returns:
             List of tracked persons with IDs
         """
-        # Filter only person detections
-        person_detections = [d for d in detections if d['class_name'] == 'person']
+        # Filter only chair detections (changed from person for safe testing)
+        person_detections = [d for d in detections if d['class_name'] == 'chair']
         
         if len(person_detections) == 0:
             # No detections, increment disappeared count

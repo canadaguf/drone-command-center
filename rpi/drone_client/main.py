@@ -285,17 +285,14 @@ class DroneClient:
                 # Update person tracker
                 tracked_persons = self.person_tracker.update(detections)
                 
-                # Update tracking controller
-                # Use default values if TOF sensors not available
-                tof_forward = self.tof_manager.get_forward_distance() if self.tof_manager else None
-                tof_down = self.tof_manager.get_down_distance() if self.tof_manager else None
-                
+                # Update tracking controller (visual-only, no sensors)
                 # Get current altitude from MAVLink telemetry
                 mavlink_telemetry = self.mavlink.get_telemetry()
                 current_altitude = mavlink_telemetry.get('relative_alt')  # Relative altitude in meters
                 
+                # Tracking uses only visual data - no ToF sensors
                 tracking_commands = self.tracking_controller.update(
-                    tracked_persons, tof_forward, tof_down, current_altitude
+                    tracked_persons, current_altitude
                 )
                 
                 # Send RC commands ONLY if tracking is active
