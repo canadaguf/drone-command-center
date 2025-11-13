@@ -82,9 +82,14 @@ class YOLODetector:
                 crop=False
             )
             
-            # Run inference
+            # Run inference with error handling
             self.net.setInput(blob)
             outputs = self.net.forward()
+            
+            # Safety check: ensure outputs is valid
+            if outputs is None:
+                logger.warning("Model returned None output")
+                return []
             
             # Post-process results
             detections = self._post_process(outputs, frame.shape[:2])
@@ -93,10 +98,16 @@ class YOLODetector:
             
         except Exception as e:
             logger.error(f"Detection failed: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return []
+        except SystemError as e:
+            # Catch segfault-related errors
+            logger.error(f"System error during detection (possible segfault): {e}")
             return []
     
     def _post_process(self, outputs: np.ndarray, img_shape: Tuple[int, int]) -> List[Dict[str, Any]]:
-        """Post-process YOLO outputs.
+        """Post-process YOLO outputs with improved error handling.
         
         Args:
             outputs: Raw YOLO outputs
@@ -105,44 +116,78 @@ class YOLODetector:
         Returns:
             List of processed detections
         """
-        outputs = outputs[0]  # Remove batch dimension
-        num_candidates = outputs.shape[1]
-        
-        boxes = []
-        scores = []
-        class_ids = []
-        
-        # Calculate scaling factors
-        x_factor = img_shape[1] / self.input_size
-        y_factor = img_shape[0] / self.input_size
-        
-        # Process each candidate
-        for i in range(num_candidates):
-            class_scores = outputs[4:, i]
-            max_score = np.max(class_scores)
+        try:
+            # Safety check: ensure outputs is valid
+            if outputs is None or len(outputs) == 0:
+                return []
             
-            if max_score >= self.confidence_threshold:
-                class_id = np.argmax(class_scores)
-                
-                if class_id in self.target_classes:
-                    # Extract bounding box (center x, center y, width, height)
-                    cx, cy, w, h = outputs[0:4, i]
+            outputs = outputs[0]  # Remove batch dimension [1, 84, 8400] > [84, 8400]
+            
+            # Safety check: ensure output shape is valid
+            if len(outputs.shape) != 2:
+                logger.warning(f"Unexpected output shape: {outputs.shape}")
+                return []
+            
+            num_candidates = outputs.shape[1]  # 8400
+            if num_candidates == 0:
+                return []
+            
+            boxes = []
+            scores = []
+            class_ids = []
+            
+            # Calculate scaling factors
+            x_factor = img_shape[1] / self.input_size
+            y_factor = img_shape[0] / self.input_size
+            
+            # Process each candidate with bounds checking
+            for i in range(num_candidates):
+                try:
+                    # Safety check: ensure we can access the array
+                    if i >= outputs.shape[1]:
+                        break
                     
-                    # Convert to image coordinates
-                    left = int((cx - w / 2) * x_factor)
-                    top = int((cy - h / 2) * y_factor)
-                    width = int(w * x_factor)
-                    height = int(h * y_factor)
+                    class_scores = outputs[4:, i]
+                    if len(class_scores) == 0:
+                        continue
                     
-                    # Ensure coordinates are within image bounds
-                    left = max(0, min(left, img_shape[1] - 1))
-                    top = max(0, min(top, img_shape[0] - 1))
-                    width = max(1, min(width, img_shape[1] - left))
-                    height = max(1, min(height, img_shape[0] - top))
+                    max_score = np.max(class_scores)
                     
-                    boxes.append([left, top, width, height])
-                    scores.append(float(max_score))
-                    class_ids.append(class_id)
+                    if max_score >= self.confidence_threshold:
+                        class_id = np.argmax(class_scores)
+                        
+                        if class_id in self.target_classes:
+                            # Extract bounding box (center x, center y, width, height)
+                            cx, cy, w, h = outputs[0:4, i]
+                            
+                            # Validate bounding box values
+                            if not (np.isfinite(cx) and np.isfinite(cy) and np.isfinite(w) and np.isfinite(h)):
+                                continue
+                            
+                            # Convert to image coordinates
+                            left = int((cx - w / 2) * x_factor)
+                            top = int((cy - h / 2) * y_factor)
+                            width = int(w * x_factor)
+                            height = int(h * y_factor)
+                            
+                            # Ensure coordinates are within image bounds
+                            left = max(0, min(left, img_shape[1] - 1))
+                            top = max(0, min(top, img_shape[0] - 1))
+                            width = max(1, min(width, img_shape[1] - left))
+                            height = max(1, min(height, img_shape[0] - top))
+                            
+                            boxes.append([left, top, width, height])
+                            scores.append(float(max_score))
+                            class_ids.append(class_id)
+                except (IndexError, ValueError) as e:
+                    # Skip this candidate if there's an error
+                    logger.debug(f"Error processing candidate {i}: {e}")
+                    continue
+        except Exception as e:
+            logger.error(f"Error in post-processing: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return []
         
         # Apply NMS
         if len(boxes) > 0:
