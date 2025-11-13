@@ -38,46 +38,82 @@ def decode_yolov8(outputs, img_shape, input_shape):
     Decode YOLO11 output (1x84x8400) to boxes, scores, classes.
     Matches the post-processing in YOLODetector class.
     """
-    outputs = outputs[0]  # [1, 84, 8400] > [84, 8400]
-    num_candidates = outputs.shape[1]  # 8400
-    boxes = []
-    scores = []
-    class_ids = []
-
-    # Calculate scaling factors
-    x_factor = img_shape[1] / input_shape[0]
-    y_factor = img_shape[0] / input_shape[1]
-
-    # Process each candidate
-    for i in range(num_candidates):
-        class_scores = outputs[4:, i]
-        max_score = np.max(class_scores)
+    try:
+        # Safety check: ensure outputs is valid
+        if outputs is None or len(outputs) == 0:
+            return [], [], []
         
-        if max_score >= CONFIDENCE_THRESHOLD:
-            class_id = np.argmax(class_scores)
-            
-            # Only process target classes (chairs)
-            if class_id not in TARGET_CLASSES:
+        outputs = outputs[0]  # [1, 84, 8400] > [84, 8400]
+        
+        # Safety check: ensure output shape is valid
+        if len(outputs.shape) != 2:
+            print(f"  Warning: Unexpected output shape: {outputs.shape}")
+            return [], [], []
+        
+        num_candidates = outputs.shape[1]  # 8400
+        num_classes = outputs.shape[0] - 4  # 80 classes (84 - 4)
+        
+        if num_candidates == 0:
+            return [], [], []
+        
+        boxes = []
+        scores = []
+        class_ids = []
+
+        # Calculate scaling factors
+        x_factor = img_shape[1] / input_shape[0]
+        y_factor = img_shape[0] / input_shape[1]
+
+        # Process each candidate with bounds checking
+        for i in range(num_candidates):
+            try:
+                # Safety check: ensure we can access the array
+                if i >= outputs.shape[1]:
+                    break
+                
+                class_scores = outputs[4:, i]
+                if len(class_scores) == 0:
+                    continue
+                
+                max_score = np.max(class_scores)
+                
+                if max_score >= CONFIDENCE_THRESHOLD:
+                    class_id = np.argmax(class_scores)
+                    
+                    # Only process target classes (chairs)
+                    if class_id not in TARGET_CLASSES:
+                        continue
+
+                    # Extract bounding box (center x, center y, width, height)
+                    cx, cy, w, h = outputs[0:4, i]
+                    
+                    # Validate bounding box values
+                    if not (np.isfinite(cx) and np.isfinite(cy) and np.isfinite(w) and np.isfinite(h)):
+                        continue
+                    
+                    # Convert to image coordinates
+                    left = int((cx - w / 2) * x_factor)
+                    top = int((cy - h / 2) * y_factor)
+                    width = int(w * x_factor)
+                    height = int(h * y_factor)
+                    
+                    # Ensure coordinates are within image bounds
+                    left = max(0, min(left, img_shape[1] - 1))
+                    top = max(0, min(top, img_shape[0] - 1))
+                    width = max(1, min(width, img_shape[1] - left))
+                    height = max(1, min(height, img_shape[0] - top))
+
+                    boxes.append([left, top, width, height])
+                    scores.append(float(max_score))
+                    class_ids.append(class_id)
+            except (IndexError, ValueError) as e:
+                # Skip this candidate if there's an error
                 continue
-
-            # Extract bounding box (center x, center y, width, height)
-            cx, cy, w, h = outputs[0:4, i]
-            
-            # Convert to image coordinates
-            left = int((cx - w / 2) * x_factor)
-            top = int((cy - h / 2) * y_factor)
-            width = int(w * x_factor)
-            height = int(h * y_factor)
-            
-            # Ensure coordinates are within image bounds
-            left = max(0, min(left, img_shape[1] - 1))
-            top = max(0, min(top, img_shape[0] - 1))
-            width = max(1, min(width, img_shape[1] - left))
-            height = max(1, min(height, img_shape[0] - top))
-
-            boxes.append([left, top, width, height])
-            scores.append(float(max_score))
-            class_ids.append(class_id)
+    except Exception as e:
+        print(f"  Error in decode_yolov8: {e}")
+        import traceback
+        traceback.print_exc()
+        return [], [], []
 
     # Apply NMS
     if len(boxes) > 0:
@@ -177,16 +213,40 @@ def main():
                 crop=False
             )
             
-            # Run inference
-            net.setInput(blob)
-            outputs = net.forward()
-            
-            # Post-process
-            boxes, scores, class_ids = decode_yolov8(
-                outputs,
-                img_shape=frame.shape[:2],
-                input_shape=(INPUT_HEIGHT, INPUT_WIDTH)
-            )
+            # Run inference with error handling
+            try:
+                net.setInput(blob)
+                outputs = net.forward()
+                
+                # Safety check: ensure outputs is valid
+                if outputs is None:
+                    print(f"[{frame_count}] Warning: Model returned None output")
+                    continue
+                
+                # Debug: print output shape on first frame
+                if frame_count == 1:
+                    print(f"[{frame_count}] Model output shape: {outputs.shape if hasattr(outputs, 'shape') else type(outputs)}")
+                    if hasattr(outputs, 'shape') and len(outputs.shape) > 0:
+                        print(f"  Output type: {type(outputs)}")
+                        if len(outputs) > 0:
+                            print(f"  First element shape: {outputs[0].shape if hasattr(outputs[0], 'shape') else 'N/A'}")
+                
+                # Post-process
+                boxes, scores, class_ids = decode_yolov8(
+                    outputs,
+                    img_shape=frame.shape[:2],
+                    input_shape=(INPUT_HEIGHT, INPUT_WIDTH)
+                )
+            except Exception as e:
+                print(f"[{frame_count}] Error during inference: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+            except SystemError as e:
+                # Catch segfault-related errors
+                print(f"[{frame_count}] System error (possible segfault): {e}")
+                print("  This might indicate a memory or model compatibility issue")
+                break
             
             # Print detection results to console (headless mode)
             if len(boxes) > 0:
@@ -215,6 +275,9 @@ def main():
             if len(boxes) == 0 and frame_count % 30 == 0:
                 # Print status every 30 frames when no detections
                 print(f"[{frame_count}] No chairs detected (FPS: {fps:.1f})")
+            
+            # Small delay to avoid overwhelming the system and reduce segfault risk
+            time.sleep(0.01)  # 10ms delay = ~100Hz max
             
             # Exit check (non-blocking, for headless mode)
             # Note: In headless mode, we can't detect 'q' keypress
