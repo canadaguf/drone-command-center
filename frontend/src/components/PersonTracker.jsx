@@ -61,7 +61,7 @@ export default function PersonTracker({ detections, sendCommand, followedId, set
   };
 
   if (detections.length === 0) {
-    return <p>No persons detected.</p>;
+    return <p>No chairs detected.</p>;
   }
 
   return (
@@ -88,7 +88,7 @@ export default function PersonTracker({ detections, sendCommand, followedId, set
               {personImages[person.id] ? (
                 <img
                   src={personImages[person.id]}
-                  alt={`Person ${person.id}`}
+                  alt={`Chair ${person.id}`}
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />
               ) : (
@@ -100,7 +100,12 @@ export default function PersonTracker({ detections, sendCommand, followedId, set
 
             {/* Info & Button */}
             <div style={{ flex: 1 }}>
-              <div><strong>Person ID:</strong> {person.id}</div>
+              <div><strong>Chair ID:</strong> {person.id}</div>
+              {person.class_name && (
+                <div style={{ fontSize: '0.9em', color: '#666', marginTop: '4px' }}>
+                  Class: {person.class_name}
+                </div>
+              )}
               {person.confidence && (
                 <div style={{ fontSize: '0.9em', color: '#666', marginTop: '4px' }}>
                   Confidence: {(person.confidence * 100).toFixed(1)}%

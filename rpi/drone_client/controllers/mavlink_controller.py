@@ -221,8 +221,8 @@ class MAVLinkController:
                 self.master.mav.rc_channels_override_send(
                     self.master.target_system,
                     self.master.target_component,
-                    65535, 65535, 65535, 65535,  # UINT16_MAX = no override
-                    65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535
+                    65535, 65535, 65535, 65535,  # Channels 1-4: UINT16_MAX = no override
+                    65535, 65535, 65535, 65535   # Channels 5-8: UINT16_MAX = no override
                 )
                 time.sleep(0.05)  # Small delay between sends
             
@@ -265,8 +265,8 @@ class MAVLinkController:
             self.master.mav.rc_channels_override_send(
                 self.master.target_system,
                 self.master.target_component,
-                roll_rc, pitch_rc, throttle_rc, yaw_rc,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                roll_rc, pitch_rc, throttle_rc, yaw_rc,  # Channels 1-4
+                0, 0, 0, 0  # Channels 5-8 (unused)
             )
             return True
             

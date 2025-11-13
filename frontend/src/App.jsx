@@ -23,7 +23,7 @@ function App() {
         </div>
 
         <div className="panel" style={{ marginTop: '20px' }}>
-          <h2 className="section-title">Detected Persons</h2>
+          <h2 className="section-title">Detected Chairs</h2>
           <PersonTracker
             detections={detections}
             sendCommand={sendCommand}
