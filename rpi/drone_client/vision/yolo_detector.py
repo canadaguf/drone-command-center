@@ -29,8 +29,9 @@ class YOLODetector:
         self.nms_threshold = nms_threshold
         
         # Target classes (chair for safe testing)
-        self.target_classes = [0]  # Only detect chairs
-        self.class_names = {0: "chair"}
+        # COCO dataset: class 0 = person, class 56 = chair
+        self.target_classes = [56]  # Only detect chairs (COCO class_id 56)
+        self.class_names = {56: "chair"}
         
         # Load model
         self.net = None
