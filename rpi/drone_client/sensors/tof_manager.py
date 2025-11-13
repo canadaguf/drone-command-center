@@ -74,7 +74,8 @@ class TOFManager:
                     max_range=max_range,
                     smbus=self.bus,
                     i2c_busio=self.i2c_busio,
-                    multiplexer_address=self.multiplexer_address
+                    multiplexer_address=self.multiplexer_address,
+                    bus_lock=self.bus_lock
                 )
                 
                 if sensor.initialize():
@@ -147,9 +148,16 @@ class TOFManager:
                                 if name in self.last_readings:
                                     self.last_readings[name]['valid'] = False
                         except Exception as e:
-                            logger.error(f"Error reading sensor {name}: {e}")
-                            if name in self.last_readings:
-                                self.last_readings[name]['valid'] = False
+                            # Check if it's EAGAIN (I2C busy) - don't mark as error
+                            import errno
+                            if isinstance(e, OSError) and (e.errno == errno.EAGAIN or e.errno == 11):
+                                # EAGAIN is expected during motor operation - don't log as error
+                                # Keep last valid reading
+                                pass
+                            else:
+                                logger.error(f"Error reading sensor {name}: {e}")
+                                if name in self.last_readings:
+                                    self.last_readings[name]['valid'] = False
                 
                 time.sleep(0.1)  # 10 Hz reading rate
                 
@@ -285,7 +293,7 @@ class TOFSensor:
     
     def __init__(self, name: str, channel: int, direction: str, 
                  max_range: float, smbus: smbus2.SMBus, i2c_busio: busio.I2C,
-                 multiplexer_address: int):
+                 multiplexer_address: int, bus_lock: threading.Lock = None):
         """Initialize TOF sensor.
         
         Args:
@@ -296,6 +304,7 @@ class TOFSensor:
             smbus: SMBus instance for multiplexer control
             i2c_busio: Busio I2C instance for Adafruit library
             multiplexer_address: Multiplexer I2C address
+            bus_lock: Threading lock for I2C bus access (optional)
         """
         self.name = name
         self.channel = channel
@@ -304,11 +313,16 @@ class TOFSensor:
         self.smbus = smbus
         self.i2c_busio = i2c_busio
         self.multiplexer_address = multiplexer_address
+        self.bus_lock = bus_lock
         
         # VL53L1X parameters
         self.vl53l1x_address = 0x29
         self.adafruit_sensor = None
         self.initialized = False
+        
+        # I2C retry configuration
+        self.max_i2c_retries = 3
+        self.i2c_retry_delay = 0.01  # Start with 10ms delay
     
     def initialize(self) -> bool:
         """Initialize sensor.
@@ -344,15 +358,55 @@ class TOFSensor:
             return False
     
     def _select_channel(self) -> None:
-        """Select multiplexer channel."""
-        try:
-            # TCA9548A channel selection (1 << channel)
-            channel_mask = 1 << self.channel
-            self.smbus.write_byte(self.multiplexer_address, channel_mask)
-            time.sleep(0.01)  # Small delay for multiplexer switching
-        except Exception as e:
-            logger.error(f"Failed to select channel {self.channel}: {e}")
-            raise
+        """Select multiplexer channel with retry logic for I2C errors.
+        
+        Handles EAGAIN (Resource temporarily unavailable) errors that occur
+        during motor operation due to electrical noise.
+        """
+        import errno
+        
+        last_error = None
+        for attempt in range(self.max_i2c_retries):
+            try:
+                # Use bus lock if available to prevent concurrent I2C access
+                if self.bus_lock:
+                    with self.bus_lock:
+                        # TCA9548A channel selection (1 << channel)
+                        channel_mask = 1 << self.channel
+                        self.smbus.write_byte(self.multiplexer_address, channel_mask)
+                else:
+                    # No lock - direct access (for backward compatibility)
+                    channel_mask = 1 << self.channel
+                    self.smbus.write_byte(self.multiplexer_address, channel_mask)
+                
+                time.sleep(0.01)  # Small delay for multiplexer switching
+                return  # Success
+                
+            except OSError as e:
+                # Check if it's EAGAIN (errno 11) - Resource temporarily unavailable
+                if e.errno == errno.EAGAIN or e.errno == 11:
+                    last_error = e
+                    # Exponential backoff: 10ms, 20ms, 40ms
+                    delay = self.i2c_retry_delay * (2 ** attempt)
+                    time.sleep(delay)
+                    logger.debug(f"I2C EAGAIN on channel {self.channel} (attempt {attempt + 1}/{self.max_i2c_retries}), retrying in {delay*1000:.1f}ms")
+                    continue
+                else:
+                    # Other I2C error - don't retry
+                    logger.error(f"Failed to select channel {self.channel}: {e}")
+                    raise
+            except Exception as e:
+                # Non-OS errors - don't retry
+                logger.error(f"Failed to select channel {self.channel}: {e}")
+                raise
+        
+        # All retries failed - but don't raise if it's just EAGAIN (I2C busy)
+        # This allows the reading loop to continue and retry on next cycle
+        if last_error:
+            # Log as debug, not warning, since EAGAIN is expected during motor operation
+            logger.debug(f"Channel {self.channel} selection: I2C busy after {self.max_i2c_retries} retries")
+            # Still raise to indicate failure, but reading loop will handle gracefully
+            raise last_error
     
     def stop_ranging(self) -> None:
         """Stop ranging on sensor."""
@@ -365,7 +419,7 @@ class TOFSensor:
                 logger.warning(f"Error stopping ranging on {self.name}: {e}")
     
     def read_distance(self) -> Optional[float]:
-        """Read distance from sensor.
+        """Read distance from sensor with retry logic for I2C errors.
         
         Returns:
             Distance in meters, None if reading failed
@@ -373,30 +427,74 @@ class TOFSensor:
         if not self.initialized or not self.adafruit_sensor:
             return None
         
+        import errno
+        
         try:
-            # Select multiplexer channel
+            # Select multiplexer channel (with retry logic)
             self._select_channel()
             time.sleep(0.02)  # Small delay after channel switch
             
-            # Check if data is ready
-            if not self.adafruit_sensor.data_ready:
+            # Check if sensor is still available
+            if not self.adafruit_sensor:
                 return None
             
-            # Read distance (returns value in centimeters)
-            distance_cm = self.adafruit_sensor.distance
+            # Check if data is ready (with retry for I2C errors)
+            data_ready = False
+            for attempt in range(3):
+                try:
+                    data_ready = self.adafruit_sensor.data_ready
+                    break
+                except OSError as e:
+                    if e.errno == errno.EAGAIN or e.errno == 11:
+                        time.sleep(0.01 * (attempt + 1))
+                        continue
+                    else:
+                        raise
+            
+            if not data_ready:
+                return None
+            
+            # Read distance (returns value in centimeters) - with retry
+            distance_cm = None
+            for attempt in range(3):
+                try:
+                    distance_cm = self.adafruit_sensor.distance
+                    break
+                except OSError as e:
+                    if e.errno == errno.EAGAIN or e.errno == 11:
+                        time.sleep(0.01 * (attempt + 1))
+                        continue
+                    else:
+                        raise
+            
+            if distance_cm is None:
+                return None
             
             # Convert to meters
             distance_m = distance_cm / 100.0
             
             # Validate reading (sensor can return 0 or very large values when out of range)
-            if distance_cm <= 0 or distance_cm > (self.max_range * 100):
+            # Also check for invalid readings (sensor returns 8191 or 8190 when out of range)
+            if distance_cm <= 0 or distance_cm > (self.max_range * 100) or distance_cm >= 8190:
                 return None
             
-            # Clear interrupt for next reading
-            self.adafruit_sensor.clear_interrupt()
+            # Clear interrupt for next reading (with retry)
+            try:
+                self.adafruit_sensor.clear_interrupt()
+            except OSError as e:
+                if e.errno == errno.EAGAIN or e.errno == 11:
+                    # EAGAIN on interrupt clear is not critical - continue
+                    pass
+                else:
+                    logger.warning(f"Error clearing interrupt for {self.name}: {e}")
             
             return distance_m
             
+        except OSError as e:
+            # Don't log EAGAIN errors as errors - they're expected during motor operation
+            if e.errno != errno.EAGAIN and e.errno != 11:
+                logger.error(f"I2C error reading distance from {self.name}: {e}")
+            return None
         except Exception as e:
             logger.error(f"Failed to read distance from {self.name}: {e}")
             return None
