@@ -153,7 +153,8 @@ def main():
     print("\n[4/4] Starting detection loop...")
     print("  Target class: chair (COCO class_id 56)")
     print("  Confidence threshold: {:.2f}".format(CONFIDENCE_THRESHOLD))
-    print("  Press 'q' to quit")
+    print("  Running in HEADLESS mode (no display)")
+    print("  Press Ctrl+C to stop")
     print("=" * 60)
     
     frame_count = 0
@@ -187,10 +188,10 @@ def main():
                 input_shape=(INPUT_HEIGHT, INPUT_WIDTH)
             )
             
-            # Draw results and print to console
+            # Print detection results to console (headless mode)
             if len(boxes) > 0:
                 detection_count += len(boxes)
-                print(f"\n[{frame_count}] Detected {len(boxes)} chair(s):")
+                print(f"\n[{frame_count}] ✓ Detected {len(boxes)} chair(s) (FPS: {fps:.1f}):")
                 
                 for i, (box, score, cls_id) in enumerate(zip(boxes, scores, class_ids)):
                     x, y, w, h = box
@@ -202,36 +203,22 @@ def main():
                     print(f"    BBox: ({x}, {y}, {x+w}, {y+h})")
                     print(f"    Center: ({center_x}, {center_y})")
                     print(f"    Size: {w}x{h} pixels")
-                    
-                    # Draw bounding box
-                    label = f"{CLASS_NAMES[cls_id]} {score:.2f}"
-                    cv2.rectangle(original_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                    cv2.putText(original_frame, label, (x, y - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    
-                    # Draw center point
-                    cv2.circle(original_frame, (center_x, center_y), 5, (0, 0, 255), -1)
+                    print(f"    Height ratio: {h/480:.3f} (for distance estimation)")
             
             # Calculate FPS
             frame_count += 1
             elapsed = time.time() - start_time
             fps = frame_count / elapsed if elapsed > 0 else 0
             
-            # Draw FPS and detection count
-            info_text = f"FPS: {fps:.1f} | Chairs: {len(boxes)} | Total: {detection_count}"
-            cv2.putText(original_frame, info_text, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            # Headless mode - no display needed
+            # Just print detection info to console
+            if len(boxes) == 0 and frame_count % 30 == 0:
+                # Print status every 30 frames when no detections
+                print(f"[{frame_count}] No chairs detected (FPS: {fps:.1f})")
             
-            # Draw target class info
-            cv2.putText(original_frame, "Detecting: CHAIR (class 56)", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-            
-            # Show frame
-            cv2.imshow("Chair Detection Test", original_frame)
-            
-            # Exit on 'q'
-            if cv2.waitKey(1) == ord('q'):
-                break
+            # Exit check (non-blocking, for headless mode)
+            # Note: In headless mode, we can't detect 'q' keypress
+            # Use Ctrl+C to stop instead
             
             # Print summary every 30 frames
             if frame_count % 30 == 0:
@@ -253,7 +240,6 @@ def main():
         print("\nCleaning up...")
         try:
             picam2.stop()
-            cv2.destroyAllWindows()
             print("✓ Camera stopped")
         except:
             pass
