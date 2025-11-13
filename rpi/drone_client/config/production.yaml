@@ -122,9 +122,12 @@ pid_gains:
 flight_modes:
   takeoff:
     throttle_start: 40      # Starting throttle percentage for gradual takeoff
-    throttle_increment: 2   # Throttle increase per step (percentage)
+    throttle_increment: 2   # Throttle increase per step (percentage) - used for fallback
     throttle_max: 70        # Maximum throttle during takeoff (percentage)
     update_interval: 0.1    # Update interval in seconds (10 Hz)
+    target_height: 0.5      # Target takeoff height in meters (based on ToF sensor)
+    height_tolerance: 0.05  # Height tolerance in meters (5cm) - takeoff completes when within this range
+    kp: 15.0                # Proportional gain for height control (throttle = base + kp * height_error)
   
   landing:
     throttle_decrement: 2           # Throttle decrease per step (percentage)

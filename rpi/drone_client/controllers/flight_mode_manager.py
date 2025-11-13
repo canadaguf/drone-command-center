@@ -42,6 +42,9 @@ class FlightModeManager:
         self.takeoff_throttle_increment = self.takeoff_config.get('throttle_increment', 2)
         self.takeoff_throttle_max = self.takeoff_config.get('throttle_max', 70)
         self.takeoff_update_interval = self.takeoff_config.get('update_interval', 0.1)  # seconds
+        self.takeoff_target_height = self.takeoff_config.get('target_height', 0.5)  # Target height in meters
+        self.takeoff_height_tolerance = self.takeoff_config.get('height_tolerance', 0.05)  # 5cm tolerance
+        self.takeoff_kp = self.takeoff_config.get('kp', 15.0)  # Proportional gain for height control
         
         # Landing configuration
         self.landing_config = config.get('landing', {})
@@ -60,6 +63,7 @@ class FlightModeManager:
         self.last_tof_down = None
         self.last_tof_time = 0
         self.takeoff_start_time = 0
+        self.takeoff_initial_tof = None  # Initial ToF reading when takeoff starts
         self.landing_start_time = 0
         self.last_update_time = 0
         
@@ -89,7 +93,8 @@ class FlightModeManager:
             self.current_throttle = self.takeoff_throttle_start
             self.takeoff_start_time = time.time()
             self.last_tof_down = None
-            logger.info(f"Starting gradual takeoff from {self.current_throttle}% throttle")
+            self.takeoff_initial_tof = None  # Will be set on first ToF reading
+            logger.info(f"Starting gradual takeoff - target height: {self.takeoff_target_height}m")
         elif mode == FlightMode.LANDING:
             self.landing_start_time = time.time()
             self.last_tof_down = None
@@ -117,11 +122,11 @@ class FlightModeManager:
     
     def update_takeoff(self, tof_down: Optional[float], 
                       current_altitude: Optional[float] = None) -> Dict[str, Any]:
-        """Update takeoff sequence.
+        """Update takeoff sequence with dynamic throttle adjustment based on ToF readings.
         
         Args:
-            tof_down: Downward ToF sensor reading in meters
-            current_altitude: Current altitude from MAVLink (optional)
+            tof_down: Downward ToF sensor reading in meters (distance to ground)
+            current_altitude: Current altitude from MAVLink (optional, for reference)
             
         Returns:
             Dictionary with throttle command and status
@@ -136,38 +141,81 @@ class FlightModeManager:
                 'pitch': 0,
                 'yaw': 0,
                 'mode': 'taking_off',
-                'complete': False
+                'complete': False,
+                'current_height': None
             }
         
-        # Detect ascent by monitoring ToF sensor
-        if tof_down is not None:
-            if self.last_tof_down is not None:
-                # Check if distance is increasing (drone ascending)
-                distance_change = tof_down - self.last_tof_down
-                
-                # If distance increased significantly, drone is ascending
-                if distance_change > 0.02:  # 2cm increase indicates ascent
-                    logger.info(f"Takeoff complete - drone ascending (ToF: {self.last_tof_down:.3f}m -> {tof_down:.3f}m)")
-                    self.set_mode(FlightMode.FLYING)
-                    return {
-                        'throttle': self.hover_throttle,
-                        'roll': 0,
-                        'pitch': 0,
-                        'yaw': 0,
-                        'mode': 'flying',
-                        'complete': True
-                    }
+        # Store initial ToF reading when takeoff starts (ground distance)
+        if tof_down is not None and self.takeoff_initial_tof is None:
+            self.takeoff_initial_tof = tof_down
+            logger.info(f"Takeoff initialized - ground distance: {tof_down:.3f}m, target height: {self.takeoff_target_height}m")
+        
+        # Calculate current height from ToF sensor
+        current_height = None
+        if tof_down is not None and self.takeoff_initial_tof is not None:
+            # Height = current ToF distance - initial ground distance
+            # As drone rises, ToF increases, so height = tof_down - initial_tof
+            current_height = tof_down - self.takeoff_initial_tof
+            
+            # Check if target height reached (within tolerance)
+            height_error = self.takeoff_target_height - current_height
+            if abs(height_error) <= self.takeoff_height_tolerance:
+                logger.info(f"Takeoff complete - reached target height: {current_height:.3f}m (target: {self.takeoff_target_height}m)")
+                self.set_mode(FlightMode.FLYING)
+                return {
+                    'throttle': self.hover_throttle,
+                    'roll': 0,
+                    'pitch': 0,
+                    'yaw': 0,
+                    'mode': 'flying',
+                    'complete': True,
+                    'current_height': current_height
+                }
+            
+            # Dynamic throttle adjustment based on height error
+            # Use proportional control: throttle = base_throttle + Kp * height_error
+            # Positive height_error means we're below target, need more throttle
+            # Negative height_error means we're above target, need less throttle
+            
+            # Base throttle for takeoff (minimum to maintain lift)
+            base_throttle = self.takeoff_throttle_start
+            
+            # Proportional control: adjust throttle based on height error
+            throttle_adjustment = self.takeoff_kp * height_error
+            
+            # Calculate new throttle
+            new_throttle = base_throttle + throttle_adjustment
+            
+            # Clamp throttle to safe limits
+            new_throttle = max(self.takeoff_throttle_start, min(new_throttle, self.takeoff_throttle_max))
+            
+            # Smooth throttle changes (limit rate of change)
+            throttle_change = new_throttle - self.current_throttle
+            max_throttle_change = self.takeoff_throttle_increment * 2  # Allow faster changes during takeoff
+            if abs(throttle_change) > max_throttle_change:
+                if throttle_change > 0:
+                    self.current_throttle += max_throttle_change
+                else:
+                    self.current_throttle -= max_throttle_change
+            else:
+                self.current_throttle = new_throttle
+            
+            # Clamp final throttle
+            self.current_throttle = max(self.takeoff_throttle_start, min(self.current_throttle, self.takeoff_throttle_max))
+            
+            logger.debug(f"Takeoff: height={current_height:.3f}m, target={self.takeoff_target_height}m, "
+                        f"error={height_error:.3f}m, throttle={self.current_throttle:.1f}%")
             
             self.last_tof_down = tof_down
-        
-        # Gradually increase throttle
-        if self.current_throttle < self.takeoff_throttle_max:
-            self.current_throttle += self.takeoff_throttle_increment
-            self.current_throttle = min(self.current_throttle, self.takeoff_throttle_max)
-            logger.debug(f"Takeoff throttle: {self.current_throttle}%")
+        elif tof_down is None:
+            # No ToF reading available - use fallback incremental approach
+            logger.warning("No ToF reading available - using fallback incremental throttle")
+            if self.current_throttle < self.takeoff_throttle_max:
+                self.current_throttle += self.takeoff_throttle_increment
+                self.current_throttle = min(self.current_throttle, self.takeoff_throttle_max)
         
         # Safety timeout - if takeoff takes too long, assume flying
-        if current_time - self.takeoff_start_time > 10.0:  # 10 second timeout
+        if current_time - self.takeoff_start_time > 15.0:  # 15 second timeout
             logger.warning("Takeoff timeout - assuming flying state")
             self.set_mode(FlightMode.FLYING)
             return {
@@ -176,7 +224,8 @@ class FlightModeManager:
                 'pitch': 0,
                 'yaw': 0,
                 'mode': 'flying',
-                'complete': True
+                'complete': True,
+                'current_height': current_height
             }
         
         self.last_update_time = current_time
@@ -187,7 +236,8 @@ class FlightModeManager:
             'pitch': 0,
             'yaw': 0,
             'mode': 'taking_off',
-            'complete': False
+            'complete': False,
+            'current_height': current_height
         }
     
     def update_landing(self, tof_down: Optional[float],
@@ -321,6 +371,7 @@ class FlightModeManager:
         self.current_throttle = 0
         self.last_tof_down = None
         self.last_tof_time = 0
+        self.takeoff_initial_tof = None
         logger.info("Flight mode manager reset")
     
     def get_status(self) -> Dict[str, Any]:
