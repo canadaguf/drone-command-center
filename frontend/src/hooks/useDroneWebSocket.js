@@ -35,6 +35,18 @@ export default function useDroneWebSocket() {
           if (msg.type === 'set_distance_mode_success') {
             console.log('Distance mode changed successfully:', msg.payload);
           }
+        } else if (msg.type === 'arm_success' || msg.type === 'arm_error' || 
+                   msg.type === 'disarm_success' || msg.type === 'disarm_error' ||
+                   msg.type === 'takeoff_success' || msg.type === 'takeoff_error' ||
+                   msg.type === 'land_success' || msg.type === 'land_error' ||
+                   msg.type === 'freeze_success' || msg.type === 'freeze_error' ||
+                   msg.type === 'prearm_success' || msg.type === 'prearm_error' ||
+                   msg.type === 'connection_success' || msg.type === 'connection_error') {
+          // Command acknowledgments - emit custom event for ControlPanel to handle
+          const event = new CustomEvent('droneCommandResponse', {
+            detail: { type: msg.type, payload: msg.payload }
+          });
+          window.dispatchEvent(event);
         } else if (msg.type === 'error') {
           console.error('Error from drone:', msg.payload);
           setError(msg.payload.message || 'Unknown error');

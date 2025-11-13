@@ -172,16 +172,32 @@ class MAVLinkController:
         Returns:
             True if armed, False otherwise
         """
-        if not self.connected:
+        if not self.master:
             return False
         
         try:
-            # Get latest telemetry which includes armed status
-            telemetry = self.get_telemetry()
-            return telemetry.get('armed', False)
+            # Force a fresh read of heartbeat to get current armed status
+            # Read multiple messages to ensure we get the latest heartbeat
+            is_armed = False
+            for _ in range(5):  # Try up to 5 times
+                msg = self.master.recv_match(type='HEARTBEAT', blocking=False, timeout=0.1)
+                if msg:
+                    is_armed = bool(msg.base_mode & mavlink2.MAV_MODE_FLAG_SAFETY_ARMED)
+                    # Update cache with fresh data
+                    self._telemetry_cache['armed'] = is_armed
+                    break
+            
+            # If no heartbeat received, fall back to cached value
+            if 'armed' not in self._telemetry_cache:
+                # Try to get from telemetry cache
+                telemetry = self.get_telemetry()
+                is_armed = telemetry.get('armed', False)
+            
+            return is_armed
         except Exception as e:
             logger.error(f"Error checking armed status: {e}")
-            return False
+            # Fall back to cached value if available
+            return self._telemetry_cache.get('armed', False)
     
     def clear_rc_override(self) -> bool:
         """Clear RC override by sending UINT16_MAX values.

@@ -186,15 +186,22 @@ class WebSocketClient:
                 action = payload.get('action')
                 
                 if action in self.command_handlers:
-                    # Execute command via command executor if set
+                    # Execute command via command executor if set (async)
+                    result = None
                     if self.command_executor:
-                        self.command_executor(action, payload)
+                        # Command executor is async and returns result dict
+                        result = await self.command_executor(action, payload)
+                    else:
+                        # Fallback to handler if no executor set
+                        result = await self.command_handlers[action](payload)
                     
-                    # Execute handler (for logging/acknowledgment)
-                    result = await self.command_handlers[action](payload)
-                    
-                    # Send acknowledgment
-                    await self._send_acknowledgment(action, result)
+                    # Send acknowledgment with actual result
+                    if result:
+                        # Use result from command executor (has success/failure info)
+                        await self._send_acknowledgment(action, result)
+                    else:
+                        # Fallback acknowledgment
+                        await self._send_acknowledgment(action, {'message': f'{action} command executed'})
                     
                     if self.on_command_callback:
                         self.on_command_callback(action, payload)
@@ -212,11 +219,15 @@ class WebSocketClient:
         
         Args:
             action: Command action
-            result: Command result
+            result: Command result (should have 'success' and 'message' keys)
         """
+        # Determine message type based on success status
+        success = result.get('success', True)  # Default to success if not specified
+        msg_type = f'{action}_success' if success else f'{action}_error'
+        
         message = {
             'source': 'drone',
-            'type': f'{action}_success',
+            'type': msg_type,
             'payload': result
         }
         await self._send_message(message)

@@ -202,7 +202,7 @@ class DroneClient:
             on_command=self._on_command_received
         )
         
-        # Set command executor to execute commands immediately
+        # Set command executor to execute commands (async function)
         self.websocket.set_command_executor(self._on_command_received)
         
         # RC override callbacks
@@ -529,19 +529,36 @@ class DroneClient:
         """Handle WebSocket disconnection."""
         logger.warning("WebSocket disconnected")
     
-    def _on_command_received(self, command: str, payload: Dict[str, Any]) -> None:
-        """Handle command received."""
+    async def _on_command_received(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle command received.
+        
+        Returns:
+            Dictionary with 'success' (bool) and 'message' (str) keys
+        """
         logger.info(f"Command received: {command}")
         
         try:
             if command == 'arm':
                 # Clear RC override before arming (handled in mavlink.arm())
                 success = self.mavlink.arm()
-                if success:
-                    if self.flight_mode_manager:
-                        self.flight_mode_manager.set_mode(FlightMode.ARMING)
                 if not success:
                     logger.error("Arm command failed - check MAVLink connection")
+                    return {'success': False, 'message': 'Arm command failed - check MAVLink connection'}
+                
+                # Wait a moment for ArduPilot to process the command
+                await asyncio.sleep(0.5)
+                
+                # Verify armed status
+                is_armed = self.mavlink.is_armed()
+                if is_armed:
+                    logger.info("✓ Drone armed successfully")
+                    if self.flight_mode_manager:
+                        self.flight_mode_manager.set_mode(FlightMode.ARMING)
+                    return {'success': True, 'message': 'Drone armed successfully', 'armed': True}
+                else:
+                    logger.warning("⚠️ Arm command sent but drone not armed - check pre-arm checks")
+                    return {'success': False, 'message': 'Arm command sent but drone not armed - check pre-arm checks', 'armed': False}
+                    
             elif command == 'disarm':
                 # Only disarm if landed (ToF < 6.6cm) or if explicitly requested
                 tof_down = self.tof_manager.get_down_distance() if self.tof_manager else None
@@ -552,39 +569,59 @@ class DroneClient:
                         logger.warning("Disarm will proceed anyway - use with caution")
                 
                 success = self.mavlink.disarm()
-                if success:
-                    if self.flight_mode_manager:
-                        self.flight_mode_manager.set_mode(FlightMode.IDLE)
                 if not success:
                     logger.error("Disarm command failed - check MAVLink connection")
+                    return {'success': False, 'message': 'Disarm command failed - check MAVLink connection'}
+                
+                # Wait a moment for ArduPilot to process the command
+                await asyncio.sleep(0.5)
+                
+                # Verify disarmed status
+                is_armed = self.mavlink.is_armed()
+                if not is_armed:
+                    logger.info("✓ Drone disarmed successfully")
+                    if self.flight_mode_manager:
+                        self.flight_mode_manager.set_mode(FlightMode.IDLE)
+                    return {'success': True, 'message': 'Drone disarmed successfully', 'armed': False}
+                else:
+                    logger.warning("⚠️ Disarm command sent but drone still armed")
+                    return {'success': False, 'message': 'Disarm command sent but drone still armed', 'armed': True}
             elif command == 'takeoff':
                 # Start gradual takeoff sequence via flight mode manager
                 logger.info("Starting gradual takeoff sequence")
                 if self.flight_mode_manager:
                     self.flight_mode_manager.set_mode(FlightMode.TAKING_OFF)
+                    return {'success': True, 'message': 'Takeoff sequence started'}
                 else:
                     logger.error("Flight mode manager not initialized")
+                    return {'success': False, 'message': 'Flight mode manager not initialized'}
             elif command == 'land':
                 # Start gradual landing sequence via flight mode manager
                 logger.info("Starting gradual landing sequence")
                 if self.flight_mode_manager:
                     self.flight_mode_manager.set_mode(FlightMode.LANDING)
+                    return {'success': True, 'message': 'Landing sequence started'}
                 else:
                     logger.error("Flight mode manager not initialized")
+                    return {'success': False, 'message': 'Flight mode manager not initialized'}
             elif command == 'freeze':
                 # Set LOITER mode (not GUIDED) - maintains position and altitude
                 success = self.mavlink.set_mode_loiter()
                 if success:
                     if self.flight_mode_manager:
                         self.flight_mode_manager.set_mode(FlightMode.LOITERING)
-                if not success:
+                    return {'success': True, 'message': 'Loiter mode activated'}
+                else:
                     logger.error("Loiter command failed - check MAVLink connection")
+                    return {'success': False, 'message': 'Loiter command failed - check MAVLink connection'}
             elif command == 'follow':
                 target_id = payload.get('target_id')
                 if self.tracking_controller:
                     self.tracking_controller.set_target(target_id)
+                    return {'success': True, 'message': f'Following target {target_id}'}
                 else:
                     logger.error("Tracking controller not initialized")
+                    return {'success': False, 'message': 'Tracking controller not initialized'}
             elif command == 'stop_following':
                 if self.tracking_controller:
                     self.tracking_controller.stop_tracking()
@@ -593,8 +630,10 @@ class DroneClient:
                     # Set GUIDED mode for position hold when tracking stops
                     self.mavlink.set_mode('GUIDED')
                     logger.info("Stop following - cleared RC override and switched to GUIDED mode")
+                    return {'success': True, 'message': 'Stopped following'}
                 else:
                     logger.error("Tracking controller not initialized")
+                    return {'success': False, 'message': 'Tracking controller not initialized'}
             elif command == 'set_distance_mode':
                 mode = payload.get('mode')
                 if self.tracking_controller:
@@ -603,14 +642,20 @@ class DroneClient:
                         # Update telemetry with new mode
                         self.telemetry.update_distance_mode(mode)
                         logger.info(f"Distance mode changed to {mode}")
+                        return {'success': True, 'message': f'Distance mode set to {mode}'}
                     else:
                         logger.error(f"Failed to set distance mode to {mode}")
+                        return {'success': False, 'message': f'Failed to set distance mode to {mode}'}
                 else:
                     logger.error("Tracking controller not initialized")
+                    return {'success': False, 'message': 'Tracking controller not initialized'}
+            else:
+                return {'success': False, 'message': f'Unknown command: {command}'}
         except Exception as e:
             logger.error(f"Error executing command {command}: {e}")
             import traceback
             logger.debug(traceback.format_exc())
+            return {'success': False, 'message': f'Error executing command: {str(e)}'}
     
     def _on_rc_override_start(self) -> None:
         """Handle RC override start."""

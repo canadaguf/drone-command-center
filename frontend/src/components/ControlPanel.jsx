@@ -1,5 +1,5 @@
 // frontend/src/components/ControlPanel.jsx
-import { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import ConfirmationModal from './ConfirmationModal';
 import useDroneWebSocket from '../hooks/useDroneWebSocket';
 
@@ -20,20 +20,55 @@ export default function ControlPanel() {
   const [showArmModal, setShowArmModal] = useState(false);
   const [showDisarmModal, setShowDisarmModal] = useState(false);
 
+  // Map command actions to status keys
+  const commandToKey = {
+    'arm': 'arm',
+    'disarm': 'disarm',
+    'takeoff': 'liftoff',
+    'land': 'landing',
+    'freeze': 'loiter',
+    'prearm_checks': 'prearm',
+    'check_connection': 'connection'
+  };
+
+  // Listen for command responses
+  useEffect(() => {
+    const handleCommandResponse = (event) => {
+      const { type, payload } = event.detail;
+      const success = type.endsWith('_success');
+      const action = type.replace('_success', '').replace('_error', '');
+      const key = commandToKey[action];
+      
+      if (key) {
+        if (success) {
+          setStatus(prev => ({ ...prev, [key]: 'success' }));
+          // Reset to idle after 2 seconds
+          setTimeout(() => {
+            setStatus(prev => ({ ...prev, [key]: 'idle' }));
+          }, 2000);
+        } else {
+          setStatus(prev => ({ ...prev, [key]: 'error' }));
+          // Reset to idle after 3 seconds on error
+          setTimeout(() => {
+            setStatus(prev => ({ ...prev, [key]: 'idle' }));
+          }, 3000);
+          console.error(`Command ${action} failed:`, payload.message || 'Unknown error');
+        }
+      }
+    };
+
+    window.addEventListener('droneCommandResponse', handleCommandResponse);
+    return () => {
+      window.removeEventListener('droneCommandResponse', handleCommandResponse);
+    };
+  }, []);
+
   const handleCommand = (action, key) => {
     // Update UI status
     setStatus(prev => ({ ...prev, [key]: 'sending' }));
 
     // Send real command via WebSocket
-    sendCommand(action); // Now this works!
-
-    // Simulate response feedback (replace later with real ACK from drone)
-    setTimeout(() => {
-      setStatus(prev => ({ ...prev, [key]: 'success' }));
-      setTimeout(() => {
-        setStatus(prev => ({ ...prev, [key]: 'idle' }));
-      }, 2000);
-    }, 300);
+    sendCommand(action);
   };
 
   const getStatusIndicator = (key) => {
