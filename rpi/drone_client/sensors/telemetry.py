@@ -48,6 +48,10 @@ class TelemetryCollector:
         self.update_interval = 0.5  # 2 Hz
         self.last_update = 0
         
+        # Altitude reference for AGL (Above Ground Level) calculation
+        self.initial_altitude_reference: Optional[float] = None
+        self.altitude_reference_captured = False
+        
     def update_from_mavlink(self, mavlink_data: Dict[str, Any]) -> None:
         """Update telemetry from MAVLink data.
         
@@ -62,6 +66,10 @@ class TelemetryCollector:
             self.last_telemetry.altitude = mavlink_data['altitude']
         if 'relative_alt' in mavlink_data:
             self.last_telemetry.relative_alt = mavlink_data['relative_alt']
+            
+            # Auto-capture altitude reference if not set and we have valid relative_alt
+            if not self.altitude_reference_captured and self.last_telemetry.relative_alt is not None:
+                self.capture_altitude_reference()
         if 'battery_remaining' in mavlink_data:
             self.last_telemetry.battery = mavlink_data['battery_remaining']
         if 'battery_voltage' in mavlink_data:
@@ -133,6 +141,7 @@ class TelemetryCollector:
         Returns:
             Dictionary representation of telemetry
         """
+        height_agl = self.get_height_agl()
         return {
             'gps': {
                 'lat': self.last_telemetry.lat,
@@ -140,6 +149,8 @@ class TelemetryCollector:
             },
             'altitude': self.last_telemetry.altitude,
             'relative_alt': self.last_telemetry.relative_alt,
+            'height_agl': height_agl,  # Height above ground level
+            'altitude_reference': self.initial_altitude_reference,
             'battery': self.last_telemetry.battery,
             'battery_voltage': self.last_telemetry.battery_voltage,
             'mode': self.last_telemetry.mode,
@@ -245,8 +256,57 @@ class TelemetryCollector:
         """
         return time.time() - self.last_telemetry.timestamp
     
+    def capture_altitude_reference(self, force: bool = False) -> bool:
+        """Capture initial altitude reference for AGL calculation.
+        
+        This should be called when the drone is on the ground (before takeoff).
+        The reference altitude is used to calculate height above ground level (AGL).
+        
+        Args:
+            force: If True, overwrite existing reference
+            
+        Returns:
+            True if reference captured successfully, False otherwise
+        """
+        if self.altitude_reference_captured and not force:
+            logger.debug("Altitude reference already captured")
+            return False
+        
+        if self.last_telemetry.relative_alt is None:
+            logger.warning("Cannot capture altitude reference - no relative_alt data available")
+            return False
+        
+        self.initial_altitude_reference = self.last_telemetry.relative_alt
+        self.altitude_reference_captured = True
+        logger.info(f"Altitude reference captured: {self.initial_altitude_reference:.3f}m")
+        return True
+    
+    def get_height_agl(self) -> Optional[float]:
+        """Get height above ground level (AGL) in meters.
+        
+        Calculates: height_agl = current_relative_alt - initial_altitude_reference
+        
+        Returns:
+            Height above ground level in meters, or None if reference not captured
+        """
+        if not self.altitude_reference_captured or self.initial_altitude_reference is None:
+            return None
+        
+        if self.last_telemetry.relative_alt is None:
+            return None
+        
+        height_agl = self.last_telemetry.relative_alt - self.initial_altitude_reference
+        return max(0.0, height_agl)  # Ensure non-negative
+    
+    def reset_altitude_reference(self) -> None:
+        """Reset altitude reference (called on landing/disarm)."""
+        self.initial_altitude_reference = None
+        self.altitude_reference_captured = False
+        logger.info("Altitude reference reset")
+    
     def reset(self) -> None:
         """Reset telemetry data."""
         self.last_telemetry = TelemetryData()
         self.last_update = 0
+        self.reset_altitude_reference()
         logger.info("Telemetry data reset")

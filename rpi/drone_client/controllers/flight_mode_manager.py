@@ -120,13 +120,15 @@ class FlightModeManager:
         """
         return self.current_mode
     
-    def update_takeoff(self, tof_down: Optional[float], 
-                      current_altitude: Optional[float] = None) -> Dict[str, Any]:
-        """Update takeoff sequence with dynamic throttle adjustment based on ToF readings.
+    def update_takeoff(self, height_agl: Optional[float] = None,
+                      tof_down: Optional[float] = None) -> Dict[str, Any]:
+        """Update takeoff sequence with dynamic throttle adjustment based on altitude AGL.
+        
+        Uses altitude AGL (Above Ground Level) as primary source, with ToF as fallback.
         
         Args:
-            tof_down: Downward ToF sensor reading in meters (distance to ground)
-            current_altitude: Current altitude from MAVLink (optional, for reference)
+            height_agl: Height above ground level in meters (from telemetry)
+            tof_down: Downward ToF sensor reading in meters (fallback, optional)
             
         Returns:
             Dictionary with throttle command and status
@@ -145,18 +147,25 @@ class FlightModeManager:
                 'current_height': None
             }
         
-        # Store initial ToF reading when takeoff starts (ground distance)
-        if tof_down is not None and self.takeoff_initial_tof is None:
-            self.takeoff_initial_tof = tof_down
-            logger.info(f"Takeoff initialized - ground distance: {tof_down:.3f}m, target height: {self.takeoff_target_height}m")
-        
-        # Calculate current height from ToF sensor
+        # Use altitude AGL as primary source, ToF as fallback
         current_height = None
-        if tof_down is not None and self.takeoff_initial_tof is not None:
-            # Height = current ToF distance - initial ground distance
-            # As drone rises, ToF increases, so height = tof_down - initial_tof
-            current_height = tof_down - self.takeoff_initial_tof
+        
+        if height_agl is not None:
+            # Primary: Use altitude AGL from flight controller
+            current_height = height_agl
+        elif tof_down is not None:
+            # Fallback: Use ToF sensor if altitude AGL not available
+            if self.takeoff_initial_tof is None:
+                self.takeoff_initial_tof = tof_down
+                logger.info(f"Takeoff initialized (ToF fallback) - ground distance: {tof_down:.3f}m, target height: {self.takeoff_target_height}m")
             
+            if self.takeoff_initial_tof is not None:
+                # Height = current ToF distance - initial ground distance
+                current_height = tof_down - self.takeoff_initial_tof
+                self.last_tof_down = tof_down
+        
+        # Process takeoff if we have height data
+        if current_height is not None:
             # Check if target height reached (within tolerance)
             height_error = self.takeoff_target_height - current_height
             if abs(height_error) <= self.takeoff_height_tolerance:
@@ -203,13 +212,11 @@ class FlightModeManager:
             # Clamp final throttle
             self.current_throttle = max(self.takeoff_throttle_start, min(self.current_throttle, self.takeoff_throttle_max))
             
-            logger.debug(f"Takeoff: height={current_height:.3f}m, target={self.takeoff_target_height}m, "
+            logger.debug(f"Takeoff: height={current_height:.3f}m (AGL), target={self.takeoff_target_height}m, "
                         f"error={height_error:.3f}m, throttle={self.current_throttle:.1f}%")
-            
-            self.last_tof_down = tof_down
-        elif tof_down is None:
-            # No ToF reading available - use fallback incremental approach
-            logger.warning("No ToF reading available - using fallback incremental throttle")
+        else:
+            # No height data available - use fallback incremental approach
+            logger.warning("No height data available (AGL or ToF) - using fallback incremental throttle")
             if self.current_throttle < self.takeoff_throttle_max:
                 self.current_throttle += self.takeoff_throttle_increment
                 self.current_throttle = min(self.current_throttle, self.takeoff_throttle_max)
@@ -240,13 +247,15 @@ class FlightModeManager:
             'current_height': current_height
         }
     
-    def update_landing(self, tof_down: Optional[float],
-                      current_altitude: Optional[float] = None) -> Dict[str, Any]:
-        """Update landing sequence.
+    def update_landing(self, height_agl: Optional[float] = None,
+                      tof_down: Optional[float] = None) -> Dict[str, Any]:
+        """Update landing sequence using altitude AGL.
+        
+        Uses altitude AGL (Above Ground Level) as primary source, with ToF as fallback.
         
         Args:
-            tof_down: Downward ToF sensor reading in meters
-            current_altitude: Current altitude from MAVLink (optional)
+            height_agl: Height above ground level in meters (from telemetry)
+            tof_down: Downward ToF sensor reading in meters (fallback, optional)
             
         Returns:
             Dictionary with throttle command, status, and landed flag
@@ -265,51 +274,63 @@ class FlightModeManager:
                 'landed': False
             }
         
-        # Check if landed using ToF sensor
-        if tof_down is not None:
-            # Check if within landing detection range (6cm ± 10% = 5.4cm to 6.6cm)
+        # Use altitude AGL as primary source, ToF as fallback
+        # Check if landed
+        landed = False
+        
+        if height_agl is not None:
+            # Primary: Use altitude AGL
+            if height_agl <= self.landing_detection_distance:
+                logger.info(f"Landing detected - Height AGL: {height_agl:.3f}m (threshold: {self.landing_detection_distance:.3f}m)")
+                landed = True
+        elif tof_down is not None:
+            # Fallback: Use ToF sensor
             landing_min = self.landing_detection_distance - self.landing_detection_tolerance
             landing_max = self.landing_detection_distance + self.landing_detection_tolerance
             
             if landing_min <= tof_down <= landing_max:
-                logger.info(f"Landing detected - ToF reading: {tof_down:.3f}m (target: {self.landing_detection_distance:.3f}m)")
-                self.set_mode(FlightMode.LANDED)
-                
-                if self.on_landed_callback:
-                    self.on_landed_callback()
-                
-                return {
-                    'throttle': 0,
-                    'roll': 0,
-                    'pitch': 0,
-                    'yaw': 0,
-                    'mode': 'landed',
-                    'complete': True,
-                    'landed': True
-                }
+                logger.info(f"Landing detected (ToF fallback) - ToF reading: {tof_down:.3f}m (target: {self.landing_detection_distance:.3f}m)")
+                landed = True
         
-        # Gradually decrease throttle, but never below minimum hover throttle
-        # until we're very close to ground
-        if tof_down is not None and tof_down > 0.15:  # Above 15cm
-            # Reduce throttle gradually
-            if self.current_throttle > self.hover_throttle:
-                self.current_throttle -= self.landing_throttle_decrement
-                self.current_throttle = max(self.current_throttle, self.hover_throttle)
-                logger.debug(f"Landing throttle: {self.current_throttle}% (ToF: {tof_down:.3f}m)")
-        elif tof_down is not None and tof_down > 0.10:  # Between 10-15cm
-            # More aggressive descent
-            if self.current_throttle > self.hover_throttle - 10:
-                self.current_throttle -= self.landing_throttle_decrement * 1.5
-                self.current_throttle = max(self.current_throttle, self.hover_throttle - 10)
-                logger.debug(f"Landing throttle: {self.current_throttle}% (ToF: {tof_down:.3f}m)")
-        elif tof_down is not None:  # Below 10cm
-            # Very close to ground, reduce throttle more aggressively
-            if self.current_throttle > 20:
-                self.current_throttle -= self.landing_throttle_decrement * 2
-                self.current_throttle = max(self.current_throttle, 20)
-                logger.debug(f"Landing throttle: {self.current_throttle}% (ToF: {tof_down:.3f}m)")
+        if landed:
+            self.set_mode(FlightMode.LANDED)
+            if self.on_landed_callback:
+                self.on_landed_callback()
+            return {
+                'throttle': 0,
+                'roll': 0,
+                'pitch': 0,
+                'yaw': 0,
+                'mode': 'landed',
+                'complete': True,
+                'landed': True
+            }
+        
+        # Gradually decrease throttle based on height
+        # Use altitude AGL if available, otherwise ToF
+        current_height = height_agl if height_agl is not None else (tof_down if tof_down is not None else None)
+        
+        if current_height is not None:
+            if current_height > 0.15:  # Above 15cm
+                # Reduce throttle gradually
+                if self.current_throttle > self.hover_throttle:
+                    self.current_throttle -= self.landing_throttle_decrement
+                    self.current_throttle = max(self.current_throttle, self.hover_throttle)
+                    logger.debug(f"Landing throttle: {self.current_throttle}% (height: {current_height:.3f}m)")
+            elif current_height > 0.10:  # Between 10-15cm
+                # More aggressive descent
+                if self.current_throttle > self.hover_throttle - 10:
+                    self.current_throttle -= self.landing_throttle_decrement * 1.5
+                    self.current_throttle = max(self.current_throttle, self.hover_throttle - 10)
+                    logger.debug(f"Landing throttle: {self.current_throttle}% (height: {current_height:.3f}m)")
+            else:  # Below 10cm
+                # Very close to ground, reduce throttle more aggressively
+                if self.current_throttle > 20:
+                    self.current_throttle -= self.landing_throttle_decrement * 2
+                    self.current_throttle = max(self.current_throttle, 20)
+                    logger.debug(f"Landing throttle: {self.current_throttle}% (height: {current_height:.3f}m)")
         else:
-            # No ToF reading - conservative descent
+            # No height data - conservative descent
             if self.current_throttle > self.hover_throttle:
                 self.current_throttle -= self.landing_throttle_decrement
                 self.current_throttle = max(self.current_throttle, self.hover_throttle)

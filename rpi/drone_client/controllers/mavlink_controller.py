@@ -274,11 +274,16 @@ class MAVLinkController:
             logger.error(f"Failed to send RC override: {e}")
             return False
     
-    def request_takeoff(self, altitude: float) -> bool:
-        """Request takeoff to specified altitude.
+    def request_takeoff(self, altitude: float, min_pitch: float = 10.0) -> bool:
+        """Request takeoff to specified altitude using NAV_TAKEOFF command.
+        
+        According to ArduCopter documentation:
+        - param1: Minimum pitch angle (degrees, typically 10-15)
+        - param7: Takeoff altitude (meters above home)
         
         Args:
-            altitude: Target altitude in meters
+            altitude: Target altitude in meters above home
+            min_pitch: Minimum pitch angle in degrees (default 10.0)
             
         Returns:
             True if command sent successfully, False otherwise
@@ -288,12 +293,19 @@ class MAVLinkController:
             return False
         
         try:
-            logger.info(f"Requesting takeoff to {altitude}m")
+            logger.info(f"Requesting takeoff to {altitude}m with min pitch {min_pitch}°")
             self.master.mav.command_long_send(
                 self.master.target_system,
                 self.master.target_component,
                 mavlink2.MAV_CMD_NAV_TAKEOFF,
-                0, 0, 0, 0, 0, 0, 0, altitude
+                0,  # Confirmation
+                min_pitch,  # param1: Minimum pitch (degrees)
+                0,  # param2: Empty
+                0,  # param3: Empty
+                0,  # param4: Yaw angle (0 = current heading)
+                0,  # param5: Latitude (not used)
+                0,  # param6: Longitude (not used)
+                altitude  # param7: Takeoff altitude (meters)
             )
             return True
         except Exception as e:
@@ -301,7 +313,10 @@ class MAVLinkController:
             return False
     
     def request_land(self) -> bool:
-        """Request landing.
+        """Request landing using LAND mode.
+        
+        Uses ArduCopter's LAND mode which provides better control than NAV_LAND command.
+        The drone will descend at a controlled rate and disarm after landing.
         
         Returns:
             True if command sent successfully, False otherwise
@@ -311,17 +326,49 @@ class MAVLinkController:
             return False
         
         try:
-            logger.info("Requesting landing")
-            self.master.mav.command_long_send(
-                self.master.target_system,
-                self.master.target_component,
-                mavlink2.MAV_CMD_NAV_LAND,
-                0, 0, 0, 0, 0, 0, 0, 0
-            )
-            return True
+            logger.info("Requesting landing (switching to LAND mode)")
+            # Use LAND mode instead of NAV_LAND command for better control
+            return self.set_mode('LAND')
         except Exception as e:
             logger.error(f"Failed to request landing: {e}")
             return False
+    
+    def has_lifted_off(self, threshold: float = 0.2) -> bool:
+        """Check if drone has lifted off based on altitude.
+        
+        Args:
+            threshold: Minimum altitude above ground to consider lifted off (meters)
+            
+        Returns:
+            True if drone has lifted off, False otherwise
+        """
+        telemetry = self.get_telemetry()
+        relative_alt = telemetry.get('relative_alt')
+        
+        if relative_alt is None:
+            return False
+        
+        # For ArduCopter, relative_alt is relative to home position
+        # If it's above threshold, we've lifted off
+        return relative_alt > threshold
+    
+    def is_landed(self, threshold: float = 0.1) -> bool:
+        """Check if drone has landed based on altitude.
+        
+        Args:
+            threshold: Maximum altitude to consider landed (meters)
+            
+        Returns:
+            True if drone appears to be landed, False otherwise
+        """
+        telemetry = self.get_telemetry()
+        relative_alt = telemetry.get('relative_alt')
+        
+        if relative_alt is None:
+            return False
+        
+        # Check if altitude is below threshold
+        return relative_alt <= threshold
     
     def get_telemetry(self) -> Dict[str, Any]:
         """Get current telemetry data.

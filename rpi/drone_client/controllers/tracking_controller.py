@@ -80,8 +80,18 @@ class TrackingController:
         # Action history for oscillation prevention
         self.action_history = deque(maxlen=5)
         
+        # Advanced following features (inspired by ArduPilot GSOC 2024 Visual Follow-Me)
+        self.advanced_config = config.get('advanced', {})
+        self.velocity_prediction = self.advanced_config.get('velocity_prediction', True)
+        self.smooth_following = self.advanced_config.get('smooth_following', True)
+        
+        # Target velocity tracking for predictive following
+        self.target_velocity_history = deque(maxlen=10)  # Store last 10 velocity estimates
+        self.last_target_position = None  # (x, y, timestamp)
+        
         logger.info(f"Tracking controller initialized: mode={self.current_distance_mode}, target_distance={self.target_distance}m")
         logger.info(f"Safety: Yaw-only mode threshold = {self.yaw_only_threshold}m")
+        logger.info(f"Advanced features: velocity_prediction={self.velocity_prediction}, smooth_following={self.smooth_following}")
     
     def set_target(self, person_id: int) -> bool:
         """Set target person for tracking.
@@ -131,14 +141,14 @@ class TrackingController:
         return True
     
     def update(self, detections: List[Dict[str, Any]], 
-                current_altitude: Optional[float] = None) -> Dict[str, Any]:
+                height_agl: Optional[float] = None) -> Dict[str, Any]:
         """Update tracking controller with new detections.
         
         Uses only visual data - no sensor dependencies.
         
         Args:
             detections: List of chair detections
-            current_altitude: Current altitude from MAVLink (relative_alt) in meters
+            height_agl: Height above ground level in meters (from telemetry)
             
         Returns:
             Dictionary containing tracking commands and status
@@ -158,7 +168,7 @@ class TrackingController:
         
         # Calculate tracking commands (visual-only, no sensors)
         commands = self._calculate_tracking_commands(
-            target_detection, current_altitude
+            target_detection, height_agl
         )
         
         # Update telemetry
@@ -202,14 +212,16 @@ class TrackingController:
             return self._get_land_commands()
     
     def _calculate_tracking_commands(self, detection: Dict[str, Any], 
-                                   current_altitude: Optional[float] = None) -> Dict[str, Any]:
-        """Calculate tracking commands from detection using visual data only.
+                                   height_agl: Optional[float] = None) -> Dict[str, Any]:
+        """Calculate tracking commands from detection using advanced visual tracking.
         
-        No sensor dependencies - uses only bbox size for distance estimation.
+        Implements ArduPilot GSOC 2024 Visual Follow-Me inspired algorithms:
+        - Velocity-based predictive following
+        - Smooth following with oscillation reduction
         
         Args:
-            detection: Target chair detection
-            current_altitude: Current altitude from MAVLink in meters
+            detection: Target detection
+            height_agl: Height above ground level in meters (from telemetry)
             
         Returns:
             Dictionary containing tracking commands
@@ -224,15 +236,32 @@ class TrackingController:
         error_x = center_x - image_center_x  # Horizontal offset
         error_y = center_y - image_center_y  # Vertical offset
         
-        # Convert to angular errors
+        # Convert to angular errors (fixed camera, no gimbal compensation needed)
         fov_h_rad = math.radians(self.fov_horizontal)
         fov_v_rad = math.radians(self.fov_vertical)
         
         angle_yaw = (error_x / self.camera_width) * fov_h_rad
         angle_pitch = (error_y / self.camera_height) * fov_v_rad
         
+        # Advanced: Velocity-based prediction for smoother following
+        if self.velocity_prediction:
+            predicted_error_x, predicted_error_y = self._predict_target_movement(
+                center_x, center_y, error_x, error_y
+            )
+            # Blend current error with predicted error (70% current, 30% predicted)
+            error_x = 0.7 * error_x + 0.3 * predicted_error_x
+            error_y = 0.7 * error_y + 0.3 * predicted_error_y
+            
+            # Recalculate angles after error blending
+            angle_yaw = (error_x / self.camera_width) * fov_h_rad
+            angle_pitch = (error_y / self.camera_height) * fov_v_rad
+        
         # Determine distance using visual estimation only (no sensors)
         distance = self._estimate_distance(detection)
+        
+        # Advanced: Update target velocity history for predictive following
+        if self.velocity_prediction:
+            self._update_target_velocity(center_x, center_y, distance)
         
         # SAFETY: Yaw-only mode for close targets (SPF-inspired)
         # Prevents forward movement when target is too close to avoid collisions
@@ -245,9 +274,9 @@ class TrackingController:
             pid_outputs = self.pid_manager.update({'yaw': yaw_error})
             yaw_cmd = int(np.clip(pid_outputs['yaw'], -100, 100))
             
-            # Calculate throttle dynamically based on altitude (MAVLink only, no sensors)
+            # Calculate throttle dynamically based on altitude (AGL height)
             throttle_cmd = self._calculate_throttle(
-                current_altitude, error_y
+                height_agl, error_y
             )
             
             # Store action history
@@ -278,6 +307,12 @@ class TrackingController:
             (center_x, center_y), distance
         )
         
+        # Advanced: Smooth following - apply smoothing filter to reduce oscillations
+        if self.smooth_following:
+            lateral_x, lateral_y, angle_yaw = self._apply_smoothing(
+                lateral_x, lateral_y, angle_yaw
+            )
+        
         # Calculate PID outputs
         pid_errors = {
             'yaw': angle_yaw,
@@ -293,9 +328,9 @@ class TrackingController:
         pitch_cmd = int(np.clip(pid_outputs['pitch'], -100, 100))
         yaw_cmd = int(np.clip(pid_outputs['yaw'], -100, 100))
         
-        # Calculate throttle dynamically based on altitude (MAVLink only, no sensors)
+        # Calculate throttle dynamically based on altitude (AGL height)
         throttle_cmd = self._calculate_throttle(
-            current_altitude, error_y
+            height_agl, error_y
         )
         
         # Oscillation prevention: check action history
@@ -408,30 +443,30 @@ class TrackingController:
         
         return (lateral_x, lateral_y)
     
-    def _calculate_throttle(self, current_altitude: Optional[float],
+    def _calculate_throttle(self, height_agl: Optional[float],
                            vertical_error: float = 0.0) -> int:
-        """Calculate throttle dynamically based on altitude feedback.
+        """Calculate throttle dynamically based on height above ground level (AGL).
         
-        Uses PID control to maintain target altitude using MAVLink data only.
+        Uses PID control to maintain target altitude using AGL height from flight controller.
         Always maintains hover throttle for stabilization - never goes below base_hover_throttle.
         
         Args:
-            current_altitude: Current altitude from MAVLink (relative_alt) in meters
+            height_agl: Height above ground level in meters (from telemetry)
             vertical_error: Vertical pixel error from visual tracking
             
         Returns:
             Throttle command (0-100) - always maintains minimum hover throttle
         """
-        # Use MAVLink altitude only (no sensor fallback)
-        actual_altitude = current_altitude
+        # Use AGL height (height above ground level)
+        actual_height = height_agl
         
-        # If no altitude data available, use base hover throttle for stabilization
-        if actual_altitude is None:
-            logger.debug("No altitude data available - using base hover throttle for stabilization")
+        # If no height data available, use base hover throttle for stabilization
+        if actual_height is None:
+            logger.debug("No height AGL data available - using base hover throttle for stabilization")
             return self.base_hover_throttle
         
-        # Calculate altitude error (target - actual)
-        altitude_error = self.target_altitude - actual_altitude
+        # Calculate altitude error (target - actual height AGL)
+        altitude_error = self.target_altitude - actual_height
         
         # Use PID controller for altitude if available
         if 'altitude' in self.pid_manager.controllers:
@@ -449,13 +484,13 @@ class TrackingController:
         # Calculate base throttle (start from hover)
         throttle = self.base_hover_throttle + throttle_adjustment + visual_adjustment
         
-        # Apply safety limits based on MAVLink altitude only
+        # Apply safety limits based on height AGL
         # Always maintain minimum hover throttle for stabilization
-        if actual_altitude < self.min_height:
+        if actual_height < self.min_height:
             # Low altitude - ensure minimum climb
-            logger.debug(f"Low altitude ({actual_altitude:.2f}m) - ensuring minimum climb")
+            logger.debug(f"Low height AGL ({actual_height:.2f}m) - ensuring minimum climb")
             throttle = max(throttle, self.base_hover_throttle + 15)
-        elif actual_altitude > self.max_height:
+        elif actual_height > self.max_height:
             # Too high - limit maximum throttle but maintain hover
             throttle = min(throttle, self.base_hover_throttle - 10)
         
@@ -466,7 +501,7 @@ class TrackingController:
         # Clamp to valid range (0-100)
         throttle = int(np.clip(throttle, 0, 100))
         
-        logger.debug(f"Throttle: alt={actual_altitude:.2f}m, target={self.target_altitude:.2f}m, "
+        logger.debug(f"Throttle: height_agl={actual_height:.2f}m, target={self.target_altitude:.2f}m, "
                     f"error={altitude_error:.2f}m, throttle={throttle}")
         
         return throttle
@@ -530,7 +565,7 @@ class TrackingController:
         }
     
     def _get_emergency_stop_commands(self, distance: float, 
-                                     current_altitude: Optional[float] = None) -> Dict[str, Any]:
+                                     height_agl: Optional[float] = None) -> Dict[str, Any]:
         """Get emergency stop commands when target too close.
         
         CRITICAL: Always maintains hover throttle to prevent falling.
@@ -538,24 +573,24 @@ class TrackingController:
         
         Args:
             distance: Current estimated distance to target (visual)
-            current_altitude: Current altitude from MAVLink
+            height_agl: Height above ground level in meters (from telemetry)
             
         Returns:
             Dictionary containing emergency stop commands
         """
         # SAFETY: Emergency stop MUST maintain altitude to prevent crash
         # Use dynamic throttle calculation, but ensure minimum hover throttle
-        throttle_cmd = self._calculate_throttle(current_altitude, 0.0)
+        throttle_cmd = self._calculate_throttle(height_agl, 0.0)
         
         # Emergency stop: ensure we never go below hover throttle
         throttle_cmd = max(throttle_cmd, self.base_hover_throttle)
         
-        # If altitude too low, force climb
-        if current_altitude is not None and current_altitude < self.min_height:
-            logger.warning(f"Emergency stop: Altitude too low ({current_altitude:.2f}m) - forcing climb")
+        # If height too low, force climb
+        if height_agl is not None and height_agl < self.min_height:
+            logger.warning(f"Emergency stop: Height AGL too low ({height_agl:.2f}m) - forcing climb")
             throttle_cmd = max(throttle_cmd, self.base_hover_throttle + 30)
         
-        logger.info(f"Emergency stop: Maintaining altitude (throttle={throttle_cmd}, altitude={current_altitude})")
+        logger.info(f"Emergency stop: Maintaining altitude (throttle={throttle_cmd}, height_agl={height_agl})")
         
         return {
             'roll': 0,  # No lateral movement
@@ -606,3 +641,113 @@ class TrackingController:
         self.fov_vertical = fov_v
         
         logger.info(f"Camera parameters updated: {width}x{height}, FOV={fov_h}°x{fov_v}°")
+    
+    def _predict_target_movement(self, center_x: float, center_y: float,
+                                 error_x: float, error_y: float) -> Tuple[float, float]:
+        """Predict target movement based on velocity history.
+        
+        Implements velocity-based prediction for smoother following.
+        
+        Args:
+            center_x: Current target center X coordinate
+            center_y: Current target center Y coordinate
+            error_x: Current horizontal error
+            error_y: Current vertical error
+            
+        Returns:
+            Tuple of (predicted_error_x, predicted_error_y)
+        """
+        import time
+        current_time = time.time()
+        
+        if self.last_target_position is None:
+            self.last_target_position = (center_x, center_y, current_time)
+            return (error_x, error_y)
+        
+        last_x, last_y, last_time = self.last_target_position
+        dt = current_time - last_time
+        
+        if dt < 0.01:  # Too small time difference
+            return (error_x, error_y)
+        
+        # Calculate velocity in pixels per second
+        vx = (center_x - last_x) / dt
+        vy = (center_y - last_y) / dt
+        
+        # Store velocity
+        self.target_velocity_history.append((vx, vy, current_time))
+        
+        # Predict future position (predict 0.1 seconds ahead)
+        prediction_time = 0.1
+        predicted_x = center_x + vx * prediction_time
+        predicted_y = center_y + vy * prediction_time
+        
+        # Calculate predicted error
+        image_center_x = self.camera_width / 2
+        image_center_y = self.camera_height / 2
+        predicted_error_x = predicted_x - image_center_x
+        predicted_error_y = predicted_y - image_center_y
+        
+        # Update last position
+        self.last_target_position = (center_x, center_y, current_time)
+        
+        return (predicted_error_x, predicted_error_y)
+    
+    def _update_target_velocity(self, center_x: float, center_y: float, distance: float) -> None:
+        """Update target velocity tracking.
+        
+        Args:
+            center_x: Current target center X coordinate
+            center_y: Current target center Y coordinate
+            distance: Current estimated distance to target
+        """
+        import time
+        current_time = time.time()
+        
+        if self.last_target_position is None:
+            self.last_target_position = (center_x, center_y, current_time)
+            return
+        
+        last_x, last_y, last_time = self.last_target_position
+        dt = current_time - last_time
+        
+        if dt < 0.01:  # Too small time difference
+            return
+        
+        # Calculate velocity in pixels per second
+        vx = (center_x - last_x) / dt
+        vy = (center_y - last_y) / dt
+        
+        # Store velocity (already done in _predict_target_movement, but keep for future use)
+        self.last_target_position = (center_x, center_y, current_time)
+    
+    def _apply_smoothing(self, lateral_x: float, lateral_y: float, 
+                        angle_yaw: float) -> Tuple[float, float, float]:
+        """Apply smoothing filter to reduce oscillations.
+        
+        Implements exponential moving average for smoother following.
+        
+        Args:
+            lateral_x: Lateral X displacement
+            lateral_y: Lateral Y displacement
+            angle_yaw: Yaw angle error
+            
+        Returns:
+            Tuple of (smoothed_lateral_x, smoothed_lateral_y, smoothed_angle_yaw)
+        """
+        # Exponential moving average with alpha = 0.7 (30% new, 70% old)
+        alpha = 0.7
+        
+        # Store smoothed values (initialize if needed)
+        if not hasattr(self, '_smoothed_lateral_x'):
+            self._smoothed_lateral_x = lateral_x
+            self._smoothed_lateral_y = lateral_y
+            self._smoothed_angle_yaw = angle_yaw
+            return (lateral_x, lateral_y, angle_yaw)
+        
+        # Apply smoothing
+        self._smoothed_lateral_x = alpha * lateral_x + (1 - alpha) * self._smoothed_lateral_x
+        self._smoothed_lateral_y = alpha * lateral_y + (1 - alpha) * self._smoothed_lateral_y
+        self._smoothed_angle_yaw = alpha * angle_yaw + (1 - alpha) * self._smoothed_angle_yaw
+        
+        return (self._smoothed_lateral_x, self._smoothed_lateral_y, self._smoothed_angle_yaw)

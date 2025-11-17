@@ -4,7 +4,8 @@
 mavlink:
   connection: "/dev/ttyAMA0"
   baud: 256000
-  takeoff_altitude: 0.5  # Default takeoff altitude in meters
+  takeoff_altitude: 1.5  # Default takeoff altitude in meters (AGL - Above Ground Level)
+  takeoff_min_pitch: 10.0  # Minimum pitch angle for takeoff (degrees, typically 10-15)
 
 # Backend configuration
 backend:
@@ -51,6 +52,11 @@ tracking:
     obstacle_threshold_forward: 1.5  # Forward obstacle detection threshold (meters) - prevents forward movement
     obstacle_threshold_down: 0.5  # Downward obstacle/ground detection threshold (meters) - triggers climb
     emergency_stop_threshold: 0.8  # Emergency stop threshold (meters) - immediate stop if obstacle closer
+  
+  # Advanced following features (inspired by ArduPilot GSOC 2024 Visual Follow-Me)
+  advanced:
+    velocity_prediction: true       # Enable velocity-based predictive following for smoother tracking
+    smooth_following: true          # Enable smoothing filter to reduce oscillations
 
 # TOF sensors configuration
 tof_sensors:
@@ -118,21 +124,26 @@ pid_gains:
     ki: 0.5   # Integral gain (helps eliminate steady-state error)
     kd: 5.0   # Derivative gain (dampens oscillations)
 
+# Altitude reference configuration
+altitude_reference:
+  auto_capture: true        # Automatically capture altitude reference when armed
+  lift_off_threshold: 0.2   # Minimum altitude AGL to consider lifted off (meters)
+  
 # Flight mode configuration
 flight_modes:
   takeoff:
-    throttle_start: 40      # Starting throttle percentage for gradual takeoff
+    throttle_start: 40      # Starting throttle percentage for gradual takeoff (fallback only)
     throttle_increment: 2   # Throttle increase per step (percentage) - used for fallback
     throttle_max: 70        # Maximum throttle during takeoff (percentage)
     update_interval: 0.1    # Update interval in seconds (10 Hz)
-    target_height: 0.5      # Target takeoff height in meters (based on ToF sensor)
+    target_height: 1.5      # Target takeoff height in meters (AGL - Above Ground Level)
     height_tolerance: 0.05  # Height tolerance in meters (5cm) - takeoff completes when within this range
     kp: 15.0                # Proportional gain for height control (throttle = base + kp * height_error)
   
   landing:
     throttle_decrement: 2           # Throttle decrease per step (percentage)
-    detection_distance: 0.06        # Distance to consider landed (6cm in meters)
-    detection_tolerance: 0.006      # Tolerance for landing detection (10% = 0.6cm)
+    detection_distance: 0.1          # Height AGL to consider landed (0.1m = 10cm)
+    detection_tolerance: 0.01       # Tolerance for landing detection (1cm)
     update_interval: 0.1            # Update interval in seconds (10 Hz)
   
   stabilization:
