@@ -138,16 +138,30 @@ class DroneKitController:
             self.vehicle.armed = True
             
             # Wait for arming to complete (with timeout)
+            # Need to flush messages to ensure command is sent
             timeout = 10
             start_time = time.time()
-            while not self.vehicle.armed and (time.time() - start_time) < timeout:
+            while (time.time() - start_time) < timeout:
+                # Flush messages to get latest vehicle state
+                self.vehicle.flush()
+                if self.vehicle.armed:
+                    logger.info("✓ Drone armed successfully")
+                    return True
                 time.sleep(0.1)
             
+            # Final check
+            self.vehicle.flush()
             if self.vehicle.armed:
                 logger.info("✓ Drone armed successfully")
                 return True
             else:
                 logger.warning("⚠️ Arm command sent but drone not armed - check pre-arm checks")
+                # Log some diagnostic info
+                try:
+                    logger.info(f"Vehicle mode: {self.vehicle.mode.name}")
+                    logger.info(f"Vehicle system status: {self.vehicle.system_status.state}")
+                except:
+                    pass
                 return False
                 
         except Exception as e:

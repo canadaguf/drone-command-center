@@ -203,8 +203,12 @@ class WebSocketClient:
                         # Fallback acknowledgment
                         await self._send_acknowledgment(action, {'message': f'{action} command executed'})
                     
+                    # Call callback if set (await if it's async)
                     if self.on_command_callback:
-                        self.on_command_callback(action, payload)
+                        if asyncio.iscoroutinefunction(self.on_command_callback):
+                            await self.on_command_callback(action, payload)
+                        else:
+                            self.on_command_callback(action, payload)
                 else:
                     logger.warning(f"Unknown command: {action}")
                     await self._send_error(f"Unknown command: {action}")

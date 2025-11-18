@@ -362,8 +362,14 @@ class DroneClient:
                 # Get telemetry data
                 telemetry_data = self.telemetry.get_telemetry()
                 
-                # Send to backend
-                await self.websocket.send_telemetry(telemetry_data)
+                # Send to backend (only if websocket is connected)
+                if self.websocket and self.websocket.connected:
+                    try:
+                        await self.websocket.send_telemetry(telemetry_data)
+                    except Exception as e:
+                        logger.error(f"Error sending telemetry: {e}")
+                else:
+                    logger.debug("WebSocket not connected, skipping telemetry send")
                 
                 await asyncio.sleep(0.5)  # 2 Hz
                 
