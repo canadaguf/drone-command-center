@@ -3,6 +3,13 @@ Main orchestrator for autonomous drone client.
 Coordinates all subsystems and manages async event loops.
 """
 
+# Python 3.13 compatibility fix for DroneKit
+# collections.MutableMapping was removed in Python 3.13
+import collections
+import collections.abc
+if not hasattr(collections, 'MutableMapping'):
+    collections.MutableMapping = collections.abc.MutableMapping
+
 import asyncio
 import logging
 import signal

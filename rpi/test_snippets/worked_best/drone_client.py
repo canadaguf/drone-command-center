@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Python 3.13 compatibility fix for DroneKit
+import collections
+import collections.abc
+if not hasattr(collections, 'MutableMapping'):
+    collections.MutableMapping = collections.abc.MutableMapping
+
 import asyncio
 import websockets
 import json

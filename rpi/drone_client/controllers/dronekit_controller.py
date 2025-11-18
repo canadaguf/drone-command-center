@@ -4,6 +4,13 @@ Uses DroneKit for basic flight operations (arm, takeoff, land, guided movement).
 Falls back to pymavlink for advanced features like RC override.
 """
 
+# Python 3.13 compatibility fix for DroneKit
+# collections.MutableMapping was removed in Python 3.13
+import collections
+import collections.abc
+if not hasattr(collections, 'MutableMapping'):
+    collections.MutableMapping = collections.abc.MutableMapping
+
 import logging
 import time
 from typing import Dict, Any, Optional
