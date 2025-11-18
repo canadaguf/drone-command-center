@@ -52,7 +52,14 @@ class MAVLinkController:
             
             # Request message streaming rates for important telemetry messages
             # This ensures we receive altitude data even without GPS
+            # Note: Delay these requests to avoid interfering with ArduPilot's EKF initialization
+            # ArduPilot needs time to initialize its position estimate before we request streams
             try:
+                # Wait longer for ArduPilot to fully initialize EKF before requesting streams
+                # This prevents "PreArm: need position estimate" errors
+                import time
+                time.sleep(2.0)  # Increased delay to allow EKF initialization
+                
                 # Request GLOBAL_POSITION_INT at 10 Hz (every 100ms)
                 self.master.mav.request_data_stream_send(
                     self.master.target_system,
@@ -77,9 +84,10 @@ class MAVLinkController:
                     2,   # 2 Hz
                     1    # Start streaming
                 )
-                logger.info("Requested telemetry message streaming")
+                logger.info("Requested telemetry message streaming (after EKF initialization)")
             except Exception as e:
                 logger.warning(f"Failed to request message streaming (may not be critical): {e}")
+                # Non-critical - ArduPilot may stream these messages by default
             
             self.connected = True
             return True
@@ -114,6 +122,13 @@ class MAVLinkController:
             logger.info("Clearing RC override before arming...")
             self.clear_rc_override()
             
+            # Give ArduPilot a moment to process RC override clearing
+            import time
+            time.sleep(0.2)
+            
+            # Check if position estimate is available (for indoor flying without GPS)
+            # ArduPilot can arm without GPS if EKF has initialized with other sensors
+            # We'll try to arm anyway - ArduPilot will reject if position estimate isn't ready
             logger.info("Arming drone...")
             # Use the same method as basic_arm.py which works
             self.master.arducopter_arm()
