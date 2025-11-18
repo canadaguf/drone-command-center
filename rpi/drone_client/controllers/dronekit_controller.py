@@ -59,9 +59,9 @@ class DroneKitController:
                 timeout=10
             )
             
-            # Wait for vehicle to be ready (but don't wait for all attributes)
+            # Wait for vehicle to be ready (wait_ready expects string args, not a list)
             logger.info("Waiting for vehicle to initialize...")
-            self.vehicle.wait_ready(['autopilot_version'], timeout=10)
+            self.vehicle.wait_ready('autopilot_version', timeout=10)
             
             logger.info(f"Connected! Vehicle type: {self.vehicle.vehicle_type}")
             logger.info(f"Autopilot version: {self.vehicle.version}")

@@ -59,7 +59,7 @@ def init_dronekit():
         wait_ready=False,
         timeout=10
     )
-    vehicle.wait_ready(['autopilot_version'], timeout=10)
+    vehicle.wait_ready('autopilot_version', timeout=10)
     logger.info(f"✓ Connected! Vehicle type: {vehicle.vehicle_type}")
     return vehicle
 
