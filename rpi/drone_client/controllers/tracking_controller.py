@@ -5,6 +5,7 @@ Converts 2D person detection to 3D drone movement commands.
 
 import math
 import logging
+import time
 from typing import Dict, Any, Optional, Tuple, List
 from collections import deque
 import numpy as np
@@ -89,9 +90,21 @@ class TrackingController:
         self.target_velocity_history = deque(maxlen=10)  # Store last 10 velocity estimates
         self.last_target_position = None  # (x, y, timestamp)
         
+        # Target recovery mechanism for handling ID reassignment after brief dropouts
+        recovery_config = config.get('recovery', {})
+        self.recovery_enabled = recovery_config.get('enabled', True)
+        self.recovery_timeout = recovery_config.get('timeout', 3.0)  # seconds
+        self.recovery_iou_threshold = recovery_config.get('iou_threshold', 0.3)
+        
+        # Recovery state tracking
+        self.last_target_bbox = None  # Last known bbox when target was lost
+        self.recovery_start_time = None  # When recovery window started
+        self.last_target_detection = None  # Last successful detection before loss
+        
         logger.info(f"Tracking controller initialized: mode={self.current_distance_mode}, target_distance={self.target_distance}m")
         logger.info(f"Safety: Yaw-only mode threshold = {self.yaw_only_threshold}m")
         logger.info(f"Advanced features: velocity_prediction={self.velocity_prediction}, smooth_following={self.smooth_following}")
+        logger.info(f"Recovery: enabled={self.recovery_enabled}, timeout={self.recovery_timeout}s, iou_threshold={self.recovery_iou_threshold}")
     
     def set_target(self, person_id: int) -> bool:
         """Set target person for tracking.
@@ -107,6 +120,11 @@ class TrackingController:
         self.last_target_time = 0
         self.target_lost_time = 0
         
+        # Clear recovery state when setting new target
+        self.recovery_start_time = None
+        self.last_target_bbox = None
+        self.last_target_detection = None
+        
         logger.info(f"Tracking target set: person {person_id}")
         return True
     
@@ -115,6 +133,11 @@ class TrackingController:
         self.current_target = None
         self.tracking_active = False
         self.target_lost_time = 0
+        
+        # Clear recovery state when stopping tracking
+        self.recovery_start_time = None
+        self.last_target_bbox = None
+        self.last_target_detection = None
         
         # Update telemetry to show hover status
         self.telemetry.update_tracking_status("HOVERING")
@@ -166,6 +189,15 @@ class TrackingController:
         self.last_target_time = 0
         self.target_lost_time = 0
         
+        # Store last successful detection for recovery mechanism
+        self.last_target_detection = target_detection
+        
+        # Clear recovery state since target is found
+        if self.recovery_start_time is not None:
+            logger.debug("Target found - clearing recovery state")
+            self.recovery_start_time = None
+            self.last_target_bbox = None
+        
         # Calculate tracking commands (visual-only, no sensors)
         commands = self._calculate_tracking_commands(
             target_detection, height_agl
@@ -176,8 +208,45 @@ class TrackingController:
         
         return commands
     
+    def _calculate_iou(self, bbox1: Tuple[int, int, int, int], bbox2: Tuple[int, int, int, int]) -> float:
+        """Calculate IoU between two bounding boxes.
+        
+        Args:
+            bbox1: First bounding box (x1, y1, x2, y2)
+            bbox2: Second bounding box (x1, y1, x2, y2)
+            
+        Returns:
+            IoU value (0.0 to 1.0)
+        """
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
+        
+        # Calculate intersection
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+        
+        if x2_i <= x1_i or y2_i <= y1_i:
+            return 0.0
+        
+        intersection = (x2_i - x1_i) * (y2_i - y1_i)
+        
+        # Calculate union
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union = area1 + area2 - intersection
+        
+        if union <= 0:
+            return 0.0
+        
+        return intersection / union
+    
     def _find_target_detection(self, detections: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Find target person in detections.
+        
+        Implements recovery mechanism: if target ID not found but recovery is active,
+        attempts to match new detections by IoU with last known bbox.
         
         Args:
             detections: List of person detections
@@ -185,17 +254,79 @@ class TrackingController:
         Returns:
             Target detection if found, None otherwise
         """
+        # First, try to find target by ID (normal case)
         for detection in detections:
             if detection.get('id') == self.current_target:
+                # Target found - clear recovery state
+                self.recovery_start_time = None
+                self.last_target_bbox = None
                 return detection
+        
+        # Target not found by ID - check if recovery is enabled and active
+        if not self.recovery_enabled or self.last_target_bbox is None:
+            return None
+        
+        # Check if recovery window is still active
+        current_time = time.time()
+        if self.recovery_start_time is None:
+            # Recovery window hasn't started yet - shouldn't happen, but handle gracefully
+            return None
+        
+        recovery_duration = current_time - self.recovery_start_time
+        if recovery_duration > self.recovery_timeout:
+            # Recovery window expired - give up
+            logger.debug(f"Recovery window expired ({recovery_duration:.2f}s > {self.recovery_timeout}s)")
+            self.recovery_start_time = None
+            self.last_target_bbox = None
+            return None
+        
+        # Recovery window active - try to match by IoU
+        best_match = None
+        best_iou = 0.0
+        
+        for detection in detections:
+            detection_bbox = detection.get('bbox')
+            if detection_bbox is None:
+                continue
+            
+            # Calculate IoU with last known bbox
+            iou = self._calculate_iou(self.last_target_bbox, detection_bbox)
+            
+            if iou > best_iou and iou >= self.recovery_iou_threshold:
+                best_iou = iou
+                best_match = detection
+        
+        if best_match is not None:
+            # Found a match - automatically reassign target ID
+            new_target_id = best_match.get('id')
+            logger.info(f"Target recovered: reassigning from ID {self.current_target} to ID {new_target_id} "
+                       f"(IoU={best_iou:.3f}, recovery_duration={recovery_duration:.2f}s)")
+            self.current_target = new_target_id
+            self.recovery_start_time = None
+            self.last_target_bbox = None
+            return best_match
+        
+        # No match found yet, but recovery window still active
+        logger.debug(f"Recovery attempt: no match found (best IoU={best_iou:.3f}, "
+                    f"threshold={self.recovery_iou_threshold}, {recovery_duration:.2f}s remaining)")
         return None
     
     def _handle_lost_target(self) -> Dict[str, Any]:
         """Handle lost target situation.
         
+        Stores last known bbox and starts recovery timer if recovery is enabled.
+        
         Returns:
             Dictionary containing appropriate commands
         """
+        # Store last known bbox and start recovery timer if not already started
+        if self.recovery_enabled and self.last_target_detection is not None:
+            if self.recovery_start_time is None:
+                # First time target is lost - store bbox and start recovery window
+                self.last_target_bbox = self.last_target_detection.get('bbox')
+                self.recovery_start_time = time.time()
+                logger.debug(f"Target lost - starting recovery window (bbox={self.last_target_bbox})")
+        
         self.target_lost_time += 0.1  # Assuming 10Hz update rate
         
         if self.target_lost_time <= self.hover_timeout:
@@ -207,7 +338,11 @@ class TrackingController:
             self.telemetry.update_tracking_status("HOVERING")
             return self._get_hover_commands()
         else:
-            # Land
+            # Land - recovery window expired or not enabled
+            if self.recovery_start_time is not None:
+                logger.info("Recovery window expired - giving up on target recovery")
+                self.recovery_start_time = None
+                self.last_target_bbox = None
             self.telemetry.update_tracking_status("LANDING")
             return self._get_land_commands()
     
@@ -609,6 +744,14 @@ class TrackingController:
         Returns:
             Dictionary containing status information
         """
+        recovery_active = False
+        recovery_time_remaining = 0.0
+        
+        if self.recovery_start_time is not None:
+            recovery_active = True
+            recovery_duration = time.time() - self.recovery_start_time
+            recovery_time_remaining = max(0.0, self.recovery_timeout - recovery_duration)
+        
         return {
             'tracking_active': self.tracking_active,
             'current_target': self.current_target,
@@ -617,7 +760,12 @@ class TrackingController:
             'target_lost_time': self.target_lost_time,
             'hover_timeout': self.hover_timeout,
             'land_timeout': self.land_timeout,
-            'auto_adjust_altitude': self.auto_adjust_altitude
+            'auto_adjust_altitude': self.auto_adjust_altitude,
+            'recovery_enabled': self.recovery_enabled,
+            'recovery_active': recovery_active,
+            'recovery_time_remaining': recovery_time_remaining,
+            'recovery_timeout': self.recovery_timeout,
+            'recovery_iou_threshold': self.recovery_iou_threshold
         }
     
     def reset_pid(self) -> None:
@@ -657,7 +805,6 @@ class TrackingController:
         Returns:
             Tuple of (predicted_error_x, predicted_error_y)
         """
-        import time
         current_time = time.time()
         
         if self.last_target_position is None:
@@ -701,7 +848,6 @@ class TrackingController:
             center_y: Current target center Y coordinate
             distance: Current estimated distance to target
         """
-        import time
         current_time = time.time()
         
         if self.last_target_position is None:
