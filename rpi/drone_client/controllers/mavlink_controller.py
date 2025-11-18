@@ -400,6 +400,13 @@ class MAVLinkController:
                         'relative_alt': msg.relative_alt / 1000.0
                     })
                 
+                elif msg.get_type() == 'GPS_RAW_INT':
+                    # GPS satellite count and fix type
+                    self._telemetry_cache.update({
+                        'gps_satellites': msg.satellites_visible,
+                        'gps_fix_type': msg.fix_type
+                    })
+                
                 elif msg.get_type() == 'SYS_STATUS':
                     self._telemetry_cache.update({
                         'battery_voltage': msg.voltage_battery / 1000.0,

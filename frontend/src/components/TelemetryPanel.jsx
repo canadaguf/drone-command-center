@@ -26,9 +26,12 @@ export default function TelemetryPanel({ telemetry }) {
       {/* GPS and Position */}
       <div style={sectionStyle}>
         <h4 style={sectionTitleStyle}>Position</h4>
-        <p><strong>GPS:</strong> {telemetry.gps.lat?.toFixed(4)}, {telemetry.gps.lon?.toFixed(4)}</p>
-        <p><strong>Altitude:</strong> {telemetry.altitude ?? '—'} m</p>
-        <p><strong>Relative Alt:</strong> {telemetry.relative_alt ?? '—'} m</p>
+        <p><strong>GPS:</strong> {telemetry.gps?.lat?.toFixed(4) ?? '—'}, {telemetry.gps?.lon?.toFixed(4) ?? '—'}</p>
+        {telemetry.gps?.satellites !== undefined && (
+          <p><strong>GPS Satellites:</strong> {telemetry.gps.satellites}</p>
+        )}
+        <p><strong>Altitude:</strong> {telemetry.altitude !== null && telemetry.altitude !== undefined ? `${telemetry.altitude.toFixed(2)} m` : '—'}</p>
+        <p><strong>Relative Alt:</strong> {telemetry.relative_alt !== null && telemetry.relative_alt !== undefined ? `${telemetry.relative_alt.toFixed(2)} m` : '—'}</p>
       </div>
 
       {/* Flight Status */}
@@ -36,8 +39,8 @@ export default function TelemetryPanel({ telemetry }) {
         <h4 style={sectionTitleStyle}>Flight Status</h4>
         <p><strong>Mode:</strong> {telemetry.mode ?? '—'}</p>
         <p><strong>Armed:</strong> {telemetry.armed ? '🟢 YES' : '🔴 NO'}</p>
-        <p><strong>Velocity:</strong> {telemetry.velocity ?? '—'} m/s</p>
-        <p><strong>Heading:</strong> {telemetry.heading ?? '—'}°</p>
+        <p><strong>Velocity:</strong> {telemetry.velocity !== null && telemetry.velocity !== undefined ? `${telemetry.velocity.toFixed(2)} m/s` : '—'}</p>
+        <p><strong>Heading:</strong> {telemetry.heading !== null && telemetry.heading !== undefined ? `${telemetry.heading.toFixed(1)}°` : '—'}</p>
       </div>
 
       {/* Tracking Status */}
@@ -89,10 +92,10 @@ export default function TelemetryPanel({ telemetry }) {
             fontWeight: 'bold',
             marginLeft: '8px'
           }}>
-            {telemetry.battery ?? '—'}%
+            {telemetry.battery !== null && telemetry.battery !== undefined ? `${telemetry.battery.toFixed(1)}%` : '—'}
           </span>
         </p>
-        {telemetry.battery_voltage && (
+        {telemetry.battery_voltage !== null && telemetry.battery_voltage !== undefined && (
           <p><strong>Voltage:</strong> {telemetry.battery_voltage.toFixed(1)} V</p>
         )}
       </div>

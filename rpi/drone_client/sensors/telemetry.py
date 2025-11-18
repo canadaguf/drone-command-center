@@ -18,6 +18,8 @@ class TelemetryData:
     lon: Optional[float] = None
     altitude: Optional[float] = None
     relative_alt: Optional[float] = None
+    gps_satellites: Optional[int] = None
+    gps_fix_type: Optional[int] = None
     
     # Flight data
     battery: Optional[float] = None
@@ -70,6 +72,10 @@ class TelemetryCollector:
             # Auto-capture altitude reference if not set and we have valid relative_alt
             if not self.altitude_reference_captured and self.last_telemetry.relative_alt is not None:
                 self.capture_altitude_reference()
+        if 'gps_satellites' in mavlink_data:
+            self.last_telemetry.gps_satellites = mavlink_data['gps_satellites']
+        if 'gps_fix_type' in mavlink_data:
+            self.last_telemetry.gps_fix_type = mavlink_data['gps_fix_type']
         if 'battery_remaining' in mavlink_data:
             self.last_telemetry.battery = mavlink_data['battery_remaining']
         if 'battery_voltage' in mavlink_data:
@@ -145,7 +151,9 @@ class TelemetryCollector:
         return {
             'gps': {
                 'lat': self.last_telemetry.lat,
-                'lon': self.last_telemetry.lon
+                'lon': self.last_telemetry.lon,
+                'satellites': self.last_telemetry.gps_satellites,
+                'fix_type': self.last_telemetry.gps_fix_type
             },
             'altitude': self.last_telemetry.altitude,
             'relative_alt': self.last_telemetry.relative_alt,
