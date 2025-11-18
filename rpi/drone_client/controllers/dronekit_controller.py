@@ -63,8 +63,18 @@ class DroneKitController:
             logger.info("Waiting for vehicle to initialize...")
             self.vehicle.wait_ready('autopilot_version', timeout=10)
             
-            logger.info(f"Connected! Vehicle type: {self.vehicle.vehicle_type}")
-            logger.info(f"Autopilot version: {self.vehicle.version}")
+            # Log connection info (handle attributes that might not be available)
+            try:
+                vehicle_type = getattr(self.vehicle, 'vehicle_type', 'Unknown')
+                logger.info(f"Connected! Vehicle type: {vehicle_type}")
+            except:
+                logger.info("Connected! Vehicle type: Unknown")
+            
+            try:
+                if hasattr(self.vehicle, 'version') and self.vehicle.version:
+                    logger.info(f"Autopilot version: {self.vehicle.version}")
+            except:
+                pass
             
             # Also create pymavlink connection for RC override
             try:
@@ -465,9 +475,9 @@ class DroneKitController:
         
         try:
             info = {
-                'vehicle_type': self.vehicle.vehicle_type,
-                'autopilot_version': self.vehicle.version,
-                'firmware_version': self.vehicle.version.flight_sw_version if self.vehicle.version else None,
+                'vehicle_type': getattr(self.vehicle, 'vehicle_type', 'Unknown'),
+                'autopilot_version': getattr(self.vehicle, 'version', None),
+                'firmware_version': getattr(self.vehicle.version, 'flight_sw_version', None) if hasattr(self.vehicle, 'version') and self.vehicle.version else None,
             }
             
             if self.master:

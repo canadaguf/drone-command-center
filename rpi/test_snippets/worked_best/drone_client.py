@@ -60,7 +60,12 @@ def init_dronekit():
         timeout=10
     )
     vehicle.wait_ready('autopilot_version', timeout=10)
-    logger.info(f"✓ Connected! Vehicle type: {vehicle.vehicle_type}")
+    # Log connection info (handle attributes that might not be available)
+    try:
+        vehicle_type = getattr(vehicle, 'vehicle_type', 'Unknown')
+        logger.info(f"✓ Connected! Vehicle type: {vehicle_type}")
+    except:
+        logger.info("✓ Connected!")
     return vehicle
 
 # Handle a single command from the web
