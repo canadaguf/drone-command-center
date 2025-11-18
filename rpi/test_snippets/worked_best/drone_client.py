@@ -52,8 +52,13 @@ signal.signal(signal.SIGTERM, signal_handler)
 def init_dronekit():
     global vehicle
     logger.info(f"Connecting to flight controller at {MAVLINK_CONNECTION_STRING}...")
-    connection_str = f"{MAVLINK_CONNECTION_STRING}?baud={MAVLINK_BAUD}"
-    vehicle = connect(connection_str, wait_ready=False, timeout=10)
+    # For serial connections, pass port as first arg and baud as keyword arg
+    vehicle = connect(
+        MAVLINK_CONNECTION_STRING,
+        baud=MAVLINK_BAUD,
+        wait_ready=False,
+        timeout=10
+    )
     vehicle.wait_ready(['autopilot_version'], timeout=10)
     logger.info(f"✓ Connected! Vehicle type: {vehicle.vehicle_type}")
     return vehicle

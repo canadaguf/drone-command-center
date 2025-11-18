@@ -51,8 +51,13 @@ class DroneKitController:
             logger.info(f"Connecting to flight controller at {self.connection_string}...")
             
             # Connect using DroneKit
-            connection_str = f"{self.connection_string}?baud={self.baud}"
-            self.vehicle = connect(connection_str, wait_ready=False, timeout=10)
+            # For serial connections, pass port as first arg and baud as keyword arg
+            self.vehicle = connect(
+                self.connection_string,
+                baud=self.baud,
+                wait_ready=False,
+                timeout=10
+            )
             
             # Wait for vehicle to be ready (but don't wait for all attributes)
             logger.info("Waiting for vehicle to initialize...")
