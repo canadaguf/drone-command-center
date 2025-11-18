@@ -50,6 +50,37 @@ class MAVLinkController:
             self.master.wait_heartbeat(timeout=10)
             logger.info("Heartbeat received from flight controller")
             
+            # Request message streaming rates for important telemetry messages
+            # This ensures we receive altitude data even without GPS
+            try:
+                # Request GLOBAL_POSITION_INT at 10 Hz (every 100ms)
+                self.master.mav.request_data_stream_send(
+                    self.master.target_system,
+                    self.master.target_component,
+                    mavlink2.MAV_DATA_STREAM_POSITION,
+                    10,  # 10 Hz
+                    1    # Start streaming
+                )
+                # Request VFR_HUD at 10 Hz
+                self.master.mav.request_data_stream_send(
+                    self.master.target_system,
+                    self.master.target_component,
+                    mavlink2.MAV_DATA_STREAM_EXTRA1,
+                    10,  # 10 Hz
+                    1    # Start streaming
+                )
+                # Request SYS_STATUS at 2 Hz
+                self.master.mav.request_data_stream_send(
+                    self.master.target_system,
+                    self.master.target_component,
+                    mavlink2.MAV_DATA_STREAM_EXTRA2,
+                    2,   # 2 Hz
+                    1    # Start streaming
+                )
+                logger.info("Requested telemetry message streaming")
+            except Exception as e:
+                logger.warning(f"Failed to request message streaming (may not be critical): {e}")
+            
             self.connected = True
             return True
             

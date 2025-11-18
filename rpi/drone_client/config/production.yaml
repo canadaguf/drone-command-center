@@ -132,7 +132,7 @@ altitude_reference:
 # Flight mode configuration
 flight_modes:
   takeoff:
-    throttle_start: 40      # Starting throttle percentage for gradual takeoff (fallback only)
+    throttle_start: 45      # Starting throttle percentage for gradual takeoff (minimum to maintain lift)
     throttle_increment: 2   # Throttle increase per step (percentage) - used for fallback
     throttle_max: 70        # Maximum throttle during takeoff (percentage)
     update_interval: 0.1    # Update interval in seconds (10 Hz)
@@ -141,10 +141,12 @@ flight_modes:
     kp: 15.0                # Proportional gain for height control (throttle = base + kp * height_error)
   
   landing:
-    throttle_decrement: 2           # Throttle decrease per step (percentage)
-    detection_distance: 0.1          # Height AGL to consider landed (0.1m = 10cm)
-    detection_tolerance: 0.01       # Tolerance for landing detection (1cm)
-    update_interval: 0.1            # Update interval in seconds (10 Hz)
+    throttle_decrement: 1.5          # Throttle decrease per step (percentage) - gradual descent
+    min_throttle: 45                 # Minimum throttle to maintain until ground contact (prevents falling)
+    detection_distance: 0.05         # Height AGL to consider landed (0.05m = 5cm)
+    detection_tolerance: 0.01        # Tolerance for landing detection (1cm)
+    update_interval: 0.1             # Update interval in seconds (10 Hz)
+    ground_contact_throttle: 0       # Throttle when ground contact detected (0 = motors off)
   
   stabilization:
     hover_throttle: 50      # Hover throttle percentage (maintains altitude)
