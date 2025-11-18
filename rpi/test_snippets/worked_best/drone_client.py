@@ -5,12 +5,13 @@ import json
 import logging
 import signal
 import sys
-from pymavlink import mavutil
+from dronekit import connect, VehicleMode
 
 # --- Configuration ---
 RENDER_WS_URL = "wss://drone-command-center.onrender.com/ws?client=drone"
 MAVLINK_CONNECTION_STRING = "/dev/ttyAMA0"  # or "/dev/serial0"
 MAVLINK_BAUD = 256000
+TAKEOFF_ALTITUDE = 1.5  # meters
 
 # Setup logging
 logging.basicConfig(
@@ -20,57 +21,103 @@ logging.basicConfig(
 logger = logging.getLogger("drone-client")
 
 # Global state
-mav_conn = None
+vehicle = None
 websocket_conn = None
 running = True
 
 # Graceful shutdown
 def signal_handler(sig, frame):
-    global running
+    global running, vehicle
     logger.info("Shutting down gracefully...")
     running = False
+    if vehicle:
+        try:
+            vehicle.close()
+        except:
+            pass
     if websocket_conn:
         asyncio.create_task(websocket_conn.close())
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
-# Initialize MAVLink connection
-def init_mavlink():
-    global mav_conn
+
+# Initialize DroneKit connection
+def init_dronekit():
+    global vehicle
     logger.info(f"Connecting to flight controller at {MAVLINK_CONNECTION_STRING}...")
-    mav_conn = mavutil.mavlink_connection(MAVLINK_CONNECTION_STRING, baud=MAVLINK_BAUD)
-    mav_conn.wait_heartbeat()
-    logger.info("Heartbeat received from flight controller.")
-    return mav_conn
+    connection_str = f"{MAVLINK_CONNECTION_STRING}?baud={MAVLINK_BAUD}"
+    vehicle = connect(connection_str, wait_ready=False, timeout=10)
+    vehicle.wait_ready(['autopilot_version'], timeout=10)
+    logger.info(f"✓ Connected! Vehicle type: {vehicle.vehicle_type}")
+    return vehicle
 
 # Handle a single command from the web
 async def handle_web_command(payload: dict, websocket):
-    global mav_conn
+    global vehicle
     action = payload.get("action")
     logger.info(f"Executing command: {action}")
 
     try:
         if action == "arm":
-            mav_conn.arducopter_arm()
+            if not vehicle.armed:
+                vehicle.armed = True
+                # Wait for arming
+                while not vehicle.armed:
+                    await asyncio.sleep(0.1)
             response = {"source": "drone", "type": "arm_success", "message": "Drone armed"}
+            
         elif action == "disarm":
-            mav_conn.arducopter_disarm()
+            if vehicle.armed:
+                vehicle.armed = False
+                # Wait for disarming
+                while vehicle.armed:
+                    await asyncio.sleep(0.1)
             response = {"source": "drone", "type": "disarm_success", "message": "Drone disarmed"}
+            
         elif action == "takeoff":
-            # Optional: add takeoff logic later
-            response = {"source": "drone", "type": "takeoff_success", "message": "Takeoff initiated"}
+            if not vehicle.armed:
+                response = {"source": "drone", "type": "error", "message": "Drone must be armed before takeoff"}
+            else:
+                # Switch to GUIDED mode if not already
+                if vehicle.mode.name != 'GUIDED':
+                    vehicle.mode = VehicleMode('GUIDED')
+                    await asyncio.sleep(1)
+                # Takeoff
+                vehicle.simple_takeoff(TAKEOFF_ALTITUDE)
+                response = {"source": "drone", "type": "takeoff_success", "message": f"Takeoff to {TAKEOFF_ALTITUDE}m initiated"}
+                
         elif action == "land":
-            # Optional
+            vehicle.mode = VehicleMode('LAND')
             response = {"source": "drone", "type": "land_success", "message": "Landing initiated"}
+            
         elif action == "freeze":
-            # Hover in place (GUIDED mode + current position)
-            response = {"source": "drone", "type": "freeze_success", "message": "Hovering"}
+            vehicle.mode = VehicleMode('LOITER')
+            response = {"source": "drone", "type": "freeze_success", "message": "Loiter mode activated"}
+            
         elif action == "check_connection":
-            response = {"source": "drone", "type": "connection_success", "message": "Connected to FC"}
+            if vehicle and vehicle.armed is not None:
+                response = {"source": "drone", "type": "connection_success", "message": "Connected to FC"}
+            else:
+                response = {"source": "drone", "type": "error", "message": "Not connected to FC"}
+                
         elif action == "prearm_checks":
-            # You can add real pre-arm checks here (e.g., GPS lock, battery)
-            response = {"source": "drone", "type": "prearm_success", "message": "Pre-arm checks passed"}
+            # Basic pre-arm checks
+            checks_passed = True
+            issues = []
+            
+            if vehicle.gps_0 and vehicle.gps_0.fix_type < 2:
+                checks_passed = False
+                issues.append("GPS fix required")
+            
+            if vehicle.battery and vehicle.battery.voltage < 10.0:
+                checks_passed = False
+                issues.append("Low battery voltage")
+            
+            if checks_passed:
+                response = {"source": "drone", "type": "prearm_success", "message": "Pre-arm checks passed"}
+            else:
+                response = {"source": "drone", "type": "prearm_failed", "message": f"Pre-arm checks failed: {', '.join(issues)}"}
         else:
             response = {"source": "drone", "type": "error", "message": f"Unknown action: {action}"}
 
@@ -91,8 +138,8 @@ async def drone_websocket_client():
                 websocket_conn = ws
                 logger.info("? Connected to Render backend")
 
-                # Reinitialize MAVLink on each reconnect (optional but safe)
-                init_mavlink()
+                # Reinitialize DroneKit on each reconnect (optional but safe)
+                init_dronekit()
 
                 while running:
                     try:
