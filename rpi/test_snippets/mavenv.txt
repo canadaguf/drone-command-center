@@ -11,3 +11,8 @@ python -m drone_client.main
 
 ls -l /dev/serial*
 sudo lsof /dev/ttyAMA10
+
+
+cd drone-command-center
+
+git pull
