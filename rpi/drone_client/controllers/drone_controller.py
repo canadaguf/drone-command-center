@@ -5,6 +5,7 @@ High-level interface for drone operations.
 
 import logging
 import time
+import math
 from typing import Dict, Any, Optional
 from dronekit import connect, VehicleMode, LocationGlobalRelative
 import dronekit
@@ -335,6 +336,148 @@ class DroneController:
             
         except Exception as e:
             logger.error(f"Error clearing RC override: {e}")
+            return False
+    
+    def send_velocity_command(self, vx: float, vy: float, vz: float, yaw_rate: float = 0.0) -> bool:
+        """Send velocity command in GUIDED mode.
+        
+        Args:
+            vx: Forward velocity (m/s, positive = forward)
+            vy: Right velocity (m/s, positive = right)
+            vz: Up velocity (m/s, positive = up)
+            yaw_rate: Yaw rate (rad/s, positive = clockwise)
+            
+        Returns:
+            True if command sent successfully, False otherwise
+        """
+        if not self.is_connected():
+            return False
+        
+        try:
+            # Ensure GUIDED mode
+            if self.vehicle.mode.name != 'GUIDED':
+                if not self.set_mode('GUIDED'):
+                    logger.error("Failed to set GUIDED mode for velocity command")
+                    return False
+            
+            # Send velocity command using DroneKit
+            # Note: DroneKit's velocity attribute sends velocity_ned (North, East, Down)
+            # We need to convert from body frame (forward, right, up) to NED frame
+            
+            # Get current heading for conversion
+            current_heading = math.radians(self.vehicle.heading)
+            
+            # Convert body frame to NED frame
+            # Forward (vx) -> North component
+            # Right (vy) -> East component
+            # Up (vz) -> Down component (negative because NED uses Down as positive)
+            velocity_north = vx * math.cos(current_heading) - vy * math.sin(current_heading)
+            velocity_east = vx * math.sin(current_heading) + vy * math.cos(current_heading)
+            velocity_down = -vz  # NED uses down as positive
+            
+            # Send velocity command
+            self.vehicle.velocity = [velocity_north, velocity_east, velocity_down]
+            
+            # Send yaw rate if non-zero
+            if abs(yaw_rate) > 0.01:
+                # Convert yaw rate to heading change
+                # For now, we'll use a simple approach: set heading relative to current
+                # Note: This is a simplified approach - full implementation would use yaw rate directly
+                # DroneKit doesn't directly support yaw rate, so we'll need to use MAVLink
+                self._send_yaw_rate_mavlink(yaw_rate)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending velocity command: {e}")
+            return False
+    
+    def _send_yaw_rate_mavlink(self, yaw_rate: float) -> None:
+        """Send yaw rate command via MAVLink.
+        
+        Args:
+            yaw_rate: Yaw rate in rad/s
+        """
+        try:
+            # Use MAVLink message for yaw rate
+            # MAV_CMD_DO_SET_ROI_LOCATION or use velocity_yaw_rate in velocity_ned
+            # For ArduPilot, we can use SET_POSITION_TARGET_LOCAL_NED with velocity_yaw_rate
+            msg = self.vehicle.message_factory.set_position_target_local_ned_encode(
+                0,  # time_boot_ms
+                self.vehicle.target_system,
+                self.vehicle.target_component,
+                8,  # frame (MAV_FRAME_LOCAL_NED)
+                0b0000111111000111,  # type_mask (ignore position, use velocity + yaw rate)
+                0, 0, 0,  # x, y, z (ignored)
+                0, 0, 0,  # vx, vy, vz (will be set separately)
+                0, 0, 0,  # afx, afy, afz (ignored)
+                0,  # yaw (ignored)
+                yaw_rate  # yaw_rate
+            )
+            self.vehicle.send_mavlink(msg)
+        except Exception as e:
+            logger.debug(f"Could not send yaw rate via MAVLink: {e}")
+    
+    def send_position_command(self, dx: float, dy: float, dz: float) -> bool:
+        """Send position command relative to current position.
+        
+        Args:
+            dx: Forward offset (m, positive = forward)
+            dy: Right offset (m, positive = right)
+            dz: Up offset (m, positive = up)
+            
+        Returns:
+            True if command sent successfully, False otherwise
+        """
+        if not self.is_connected():
+            return False
+        
+        try:
+            # Ensure GUIDED mode
+            if self.vehicle.mode.name != 'GUIDED':
+                if not self.set_mode('GUIDED'):
+                    logger.error("Failed to set GUIDED mode for position command")
+                    return False
+            
+            # Get current position
+            current_location = self.vehicle.location.global_relative_frame
+            
+            # Calculate target position
+            # Convert body frame offsets to NED frame
+            current_heading = math.radians(self.vehicle.heading)
+            
+            # Forward (dx) -> North component
+            # Right (dy) -> East component
+            # Up (dz) -> Altitude increase
+            offset_north = dx * math.cos(current_heading) - dy * math.sin(current_heading)
+            offset_east = dx * math.sin(current_heading) + dy * math.cos(current_heading)
+            
+            # Create target location
+            target_location = LocationGlobalRelative(
+                current_location.lat,
+                current_location.lon,
+                current_location.alt + dz
+            )
+            
+            # For horizontal movement, we need to calculate new lat/lon
+            # Simplified: use simple offset (accurate for small distances)
+            # 1 degree latitude ≈ 111km, 1 degree longitude ≈ 111km * cos(latitude)
+            lat_offset = offset_north / 111000.0
+            lon_offset = offset_east / (111000.0 * math.cos(math.radians(current_location.lat)))
+            
+            target_location = LocationGlobalRelative(
+                current_location.lat + lat_offset,
+                current_location.lon + lon_offset,
+                current_location.alt + dz
+            )
+            
+            # Send command
+            self.vehicle.simple_goto(target_location)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending position command: {e}")
             return False
     
     def get_telemetry(self) -> Dict[str, Any]:

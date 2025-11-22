@@ -24,11 +24,11 @@ from .controllers.telemetry_reader import TelemetryReader
 from .sensors.telemetry import TelemetryCollector
 from .communication.websocket_client import WebSocketClient
 
-# Vision imports (stubbed - disabled for now)
-# from .vision.yolo_detector import YOLODetector
-# from .vision.person_tracker import PersonTracker
-# from .vision.depth_estimator import DepthEstimator
-# from .sensors.camera import CameraManager
+# Vision imports
+from .vision.yolo_detector import YOLODetector
+from .vision.object_tracker import ObjectTracker
+from .controllers.tracking_controller import TrackingController
+from .sensors.camera import CameraManager
 
 # Setup logging
 logging.basicConfig(
@@ -60,11 +60,11 @@ class DroneClient:
         self.telemetry = None
         self.websocket = None
         
-        # Vision components (stubbed - disabled)
-        # self.camera = None
-        # self.yolo_detector = None
-        # self.person_tracker = None
-        # self.depth_estimator = None
+        # Vision components
+        self.camera = None
+        self.yolo_detector = None
+        self.object_tracker = None
+        self.tracking_controller = None
         
         # State
         self.running = False
@@ -73,6 +73,7 @@ class DroneClient:
         # Event loops
         self.telemetry_loop_task = None
         self.command_loop_task = None
+        self.vision_loop_task = None
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -113,12 +114,52 @@ class DroneClient:
             backend_config = self.config.get_backend_config()
             self.websocket = WebSocketClient(backend_config)
             
-            # Vision components (stubbed - disabled for now)
-            # logger.info("Vision features disabled - skipping initialization")
-            # self.camera = None
-            # self.yolo_detector = None
-            # self.person_tracker = None
-            # self.depth_estimator = None
+            # Initialize vision components
+            camera_config = self.config.get_camera_config()
+            self.camera = CameraManager(camera_config)
+            if not self.camera.initialize():
+                logger.error("Failed to initialize camera")
+                return False
+            
+            # Initialize YOLO detector
+            vision_config = self.config.get_vision_config()
+            model_path = vision_config.get('model_path', '/home/pi/models/yolo11n.onnx')
+            try:
+                self.yolo_detector = YOLODetector(
+                    model_path=model_path,
+                    input_size=vision_config.get('input_size', 320),
+                    confidence_threshold=vision_config.get('confidence', 0.5)
+                )
+                if self.yolo_detector.net is None:
+                    logger.warning("YOLO model not loaded - vision features disabled")
+                    logger.warning(f"Model path: {model_path}")
+                    logger.warning("You can continue without vision - basic commands will work")
+                    self.yolo_detector = None
+            except Exception as e:
+                logger.warning(f"Failed to initialize YOLO detector: {e}")
+                logger.warning("Continuing without vision features")
+                self.yolo_detector = None
+            
+            # Initialize object tracker
+            if self.yolo_detector:
+                self.object_tracker = ObjectTracker(use_deepsort=True)
+                
+                # Initialize tracking controller
+                tracking_config = self.config.get_tracking_config()
+                tracking_config['camera_width'] = camera_config.get('width', 640)
+                tracking_config['camera_height'] = camera_config.get('height', 480)
+                tracking_config['fov_horizontal'] = camera_config.get('fov_horizontal', 120)
+                tracking_config['fov_vertical'] = camera_config.get('fov_vertical', 90)
+                tracking_config['pid_gains'] = self.config.get_pid_config()
+                tracking_config['target_distance'] = tracking_config.get('distance_modes', {}).get('medium', 3.0)
+                tracking_config['target_altitude'] = tracking_config.get('altitude', {}).get('target_altitude', 1.5)
+                tracking_config['lost_target_timeout'] = tracking_config.get('lost_target', {}).get('hover_timeout', 2.0)
+                
+                self.tracking_controller = TrackingController(tracking_config)
+                
+                # Update telemetry with distance mode
+                default_mode = tracking_config.get('default_mode', 'medium')
+                self.telemetry.update_distance_mode(default_mode)
             
             # Setup callbacks
             self._setup_callbacks()
@@ -163,6 +204,10 @@ class DroneClient:
             self._command_loop(),
             self.websocket.start()
         ]
+        
+        # Add vision loop if components are available
+        if self.yolo_detector and self.object_tracker:
+            tasks.append(self._vision_loop())
         
         try:
             # Wait for all tasks
@@ -270,6 +315,86 @@ class DroneClient:
                 logger.error(f"Error in command loop: {e}")
                 await asyncio.sleep(0.1)
     
+    async def _vision_loop(self) -> None:
+        """Vision processing and tracking loop."""
+        logger.info("Vision loop started")
+        
+        # Skip if vision components not available
+        if not self.yolo_detector or not self.object_tracker or not self.camera:
+            logger.info("Vision loop disabled - components not available")
+            while self.running:
+                await asyncio.sleep(1)
+            return
+        
+        while self.running:
+            try:
+                # Capture frame
+                frame = self.camera.capture_frame()
+                if frame is None:
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                # Run YOLO detection
+                detections = self.yolo_detector.detect(frame)
+                
+                # Update object tracker
+                tracked_detections = self.object_tracker.update(detections, frame=frame)
+                
+                # Get current altitude for tracking controller
+                height_agl = self.telemetry.get_height_agl()
+                current_time = time.time()
+                
+                # Update tracking controller and get control command
+                if self.tracking_controller and self.tracking_controller.is_tracking():
+                    control_command = self.tracking_controller.update(
+                        tracked_detections, 
+                        current_altitude=height_agl,
+                        timestamp=current_time
+                    )
+                    
+                    if control_command:
+                        # Send velocity command to drone
+                        if self.drone_controller and self.drone_controller.is_connected():
+                            # Ensure GUIDED mode for following
+                            if self.drone_controller.get_mode() != 'GUIDED':
+                                self.drone_controller.set_mode('GUIDED')
+                            
+                            # Send velocity command
+                            self.drone_controller.send_velocity_command(
+                                vx=control_command.vx,
+                                vy=control_command.vy,
+                                vz=control_command.vz,
+                                yaw_rate=control_command.yaw_rate
+                            )
+                    else:
+                        # Target lost - enter loiter mode
+                        if self.drone_controller and self.drone_controller.is_connected():
+                            logger.warning("Target lost - entering loiter mode")
+                            self.drone_controller.set_mode_loiter()
+                            self.tracking_controller.stop_tracking()
+                
+                # Send detections to backend
+                if self.websocket and self.websocket.connected:
+                    try:
+                        await self.websocket.send_detections(tracked_detections, frame)
+                    except Exception as e:
+                        logger.error(f"Error sending detections: {e}")
+                
+                # Update tracking status in telemetry
+                if self.tracking_controller:
+                    if self.tracking_controller.is_tracking():
+                        self.telemetry.update_tracking_status(f"TRACKING_ID_{self.tracking_controller.current_target_id}")
+                    else:
+                        self.telemetry.update_tracking_status("IDLE")
+                
+                await asyncio.sleep(0.05)  # 20 Hz
+                
+            except Exception as e:
+                logger.error(f"Error in vision loop: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                await asyncio.sleep(0.1)
+    
     async def shutdown(self) -> None:
         """Shutdown drone client."""
         logger.info("Shutting down drone client...")
@@ -288,9 +413,9 @@ class DroneClient:
         if self.drone_controller:
             self.drone_controller.disconnect()
         
-        # Cleanup camera (if vision was enabled)
-        # if self.camera:
-        #     self.camera.cleanup()
+        # Cleanup camera
+        if self.camera:
+            self.camera.cleanup()
         
         logger.info("Drone client shutdown complete")
     
@@ -339,12 +464,10 @@ class DroneClient:
                 return await self._handle_prearm_checks()
                 
             elif command == 'follow':
-                # Stubbed - vision features disabled
-                return {'success': False, 'message': 'Follow command not available - vision features disabled'}
+                return await self._handle_follow(payload)
                 
             elif command == 'stop_following':
-                # Stubbed - vision features disabled
-                return {'success': False, 'message': 'Stop following command not available - vision features disabled'}
+                return await self._handle_stop_following(payload)
                 
             elif command == 'set_distance_mode':
                 # Stubbed - vision features disabled
@@ -490,6 +613,41 @@ class DroneClient:
             'message': f'Connection status: {status}',
             'status': status
         }
+    
+    async def _handle_follow(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle follow command."""
+        if not self.tracking_controller:
+            return {'success': False, 'message': 'Tracking controller not initialized'}
+        
+        target_id = payload.get('target_id')
+        if target_id is None:
+            return {'success': False, 'message': 'target_id not provided'}
+        
+        # Set target in tracking controller
+        success = self.tracking_controller.set_target(target_id)
+        if success:
+            # Ensure GUIDED mode for following
+            if self.drone_controller and self.drone_controller.is_connected():
+                if self.drone_controller.get_mode() != 'GUIDED':
+                    self.drone_controller.set_mode('GUIDED')
+            
+            return {'success': True, 'message': f'Following target ID {target_id}'}
+        else:
+            return {'success': False, 'message': 'Failed to set target'}
+    
+    async def _handle_stop_following(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle stop following command."""
+        if not self.tracking_controller:
+            return {'success': False, 'message': 'Tracking controller not initialized'}
+        
+        # Stop tracking
+        self.tracking_controller.stop_tracking()
+        
+        # Enter loiter mode
+        if self.drone_controller and self.drone_controller.is_connected():
+            self.drone_controller.set_mode_loiter()
+        
+        return {'success': True, 'message': 'Stopped following'}
     
     async def _handle_prearm_checks(self) -> Dict[str, Any]:
         """Handle prearm checks command."""
