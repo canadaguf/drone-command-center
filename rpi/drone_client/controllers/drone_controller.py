@@ -36,15 +36,12 @@ class DroneController:
             True if connection successful, False otherwise
         """
         try:
-            # Build connection string with baud rate
-            if self.connection_string.startswith('/dev/'):
-                # Serial connection
-                conn_str = f"{self.connection_string}?baud={self.baud}"
-            else:
-                conn_str = self.connection_string
+            # Build connection string (baud rate passed as separate parameter)
+            conn_str = self.connection_string
             
-            logger.info(f"Connecting to vehicle at {conn_str}...")
-            self.vehicle = connect(conn_str, wait_ready=['autopilot_version'])
+            logger.info(f"Connecting to vehicle at {conn_str} (baud={self.baud})...")
+            # Pass baud rate as keyword argument, not in connection string
+            self.vehicle = connect(conn_str, baud=self.baud, wait_ready=['autopilot_version'])
             self.connected = True
             
             logger.info(f"Connected to vehicle: {self.vehicle.version}")
