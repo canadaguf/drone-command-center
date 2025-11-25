@@ -395,7 +395,7 @@ class DroneController:
             return False
     
     def simple_land(self) -> bool:
-        """Land the vehicle.
+        """Land the vehicle (deprecated - use incremental_throttle_land instead).
         
         Returns:
             True if land command sent successfully, False otherwise
@@ -416,6 +416,184 @@ class DroneController:
             
         except Exception as e:
             logger.error(f"Error during landing: {e}")
+            return False
+    
+    def incremental_throttle_land(self,
+                                  get_bottom_distance: callable,
+                                  ground_threshold: float = 0.08,
+                                  throttle_decrement: int = 4,
+                                  decrement_interval: float = 0.15,
+                                  min_throttle: int = 1100,
+                                  max_timeout: float = 60.0) -> bool:
+        """Incremental throttle landing using bottom ToF sensor.
+        
+        Slowly reduces throttle while monitoring bottom sensor to detect ground contact.
+        This is safer than autonomous landing mode as it provides precise control.
+        
+        Args:
+            get_bottom_distance: Callable that returns current bottom sensor distance in meters
+            ground_threshold: Distance threshold to detect ground contact (default 0.08m = 8cm)
+            throttle_decrement: Throttle decrement per step (default 4 = 0.5% of 800 range, slower than takeoff)
+            decrement_interval: Time between decrements in seconds (default 0.15s, slower than takeoff)
+            min_throttle: Minimum throttle to maintain (default 1100, absolute minimum)
+            max_timeout: Maximum time for landing in seconds (default 60s, longer than takeoff)
+            
+        Returns:
+            True if landing successful, False otherwise
+        """
+        if not self.is_connected():
+            logger.error("Cannot land: not connected")
+            return False
+        
+        if not self.vehicle.armed:
+            logger.warning("Vehicle already disarmed")
+            return True
+        
+        try:
+            # Ensure GUIDED mode
+            if self.vehicle.mode.name != 'GUIDED':
+                if not self.set_mode('GUIDED'):
+                    logger.error("Failed to set GUIDED mode for landing")
+                    return False
+            
+            logger.info("Starting incremental throttle landing using bottom sensor")
+            
+            # Get current height
+            initial_distance = get_bottom_distance()
+            if initial_distance is None:
+                logger.error("Cannot read bottom sensor - landing aborted")
+                return False
+            
+            logger.info(f"Initial height: {initial_distance:.3f}m")
+            
+            # First, use velocity commands to descend smoothly
+            # This is safer than immediately switching to RC override
+            logger.info("Phase 1: Controlled descent using velocity commands...")
+            descent_start_time = time.time()
+            descent_phase_timeout = max_timeout * 0.7  # Use 70% of timeout for descent
+            
+            while (time.time() - descent_start_time) < descent_phase_timeout:
+                current_distance = get_bottom_distance()
+                
+                if current_distance is None:
+                    logger.warning("Lost bottom sensor reading during descent - continuing carefully")
+                    # Very slow descent if sensor unavailable
+                    self.send_velocity_command(0.0, 0.0, -0.2, 0.0)  # 0.2 m/s down
+                    time.sleep(0.2)
+                    continue
+                
+                # Check if close to ground (within 30cm)
+                if current_distance <= 0.30:
+                    logger.info(f"Close to ground ({current_distance:.3f}m) - switching to throttle control")
+                    break
+                
+                # Calculate downward velocity (proportional to height, max 0.5 m/s)
+                # Slower descent when closer to ground
+                if current_distance > 1.0:
+                    downward_velocity = -0.5  # Max descent rate
+                elif current_distance > 0.5:
+                    downward_velocity = -0.3  # Medium descent rate
+                else:
+                    downward_velocity = -0.15  # Slow descent when close
+            
+                self.send_velocity_command(0.0, 0.0, downward_velocity, 0.0)
+                time.sleep(0.15)  # Update every 150ms
+            
+            # Phase 2: Switch to RC override for precise throttle control near ground
+            logger.info("Phase 2: Precise throttle control near ground...")
+            
+            # Get current throttle from vehicle (if available) or estimate
+            # We'll start from a safe hover throttle and reduce gradually
+            current_throttle = 1500  # Start at neutral/mid-range throttle
+            landing_start_time = time.time()
+            ground_contact_detected = False
+            
+            # Small delay to stabilize after velocity command
+            time.sleep(0.2)
+            
+            while not ground_contact_detected and (time.time() - landing_start_time) < (max_timeout * 0.3):
+                # Read bottom sensor
+                current_distance = get_bottom_distance()
+                
+                if current_distance is None:
+                    logger.warning("Lost bottom sensor reading - using conservative throttle reduction")
+                    # Very slow throttle reduction if sensor unavailable
+                    current_throttle = max(min_throttle, current_throttle - throttle_decrement // 2)
+                    self.send_rc_override(1500, 1500, 1500, current_throttle)
+                    time.sleep(decrement_interval * 1.5)  # Slower updates
+                    continue
+                
+                # Check for ground contact
+                if current_distance <= ground_threshold:
+                    ground_contact_detected = True
+                    logger.info(f"Ground contact detected! Distance: {current_distance:.3f}m")
+                    break
+                
+                # Reduce throttle gradually
+                # Reduce faster when higher, slower when closer to ground
+                if current_distance > 0.20:
+                    # Still relatively high - can reduce faster
+                    throttle_reduction = throttle_decrement
+                elif current_distance > 0.12:
+                    # Getting close - reduce slower
+                    throttle_reduction = throttle_decrement // 2
+                else:
+                    # Very close - reduce very slowly
+                    throttle_reduction = throttle_decrement // 4
+                
+                current_throttle = max(min_throttle, current_throttle - throttle_reduction)
+                
+                # Set throttle via RC override
+                self.send_rc_override(1500, 1500, 1500, current_throttle)
+                
+                logger.debug(f"Height: {current_distance:.3f}m, Throttle: {current_throttle}")
+                
+                time.sleep(decrement_interval)
+            
+            if not ground_contact_detected:
+                logger.warning("Ground contact not detected within timeout - reducing throttle to minimum")
+                # Force minimum throttle
+                self.send_rc_override(1500, 1500, 1500, min_throttle)
+                time.sleep(1.0)  # Wait a moment
+            
+            # Phase 3: Final disarm sequence
+            logger.info("Phase 3: Finalizing landing...")
+            
+            # Set throttle to minimum
+            self.send_rc_override(1500, 1500, 1500, min_throttle)
+            time.sleep(0.5)
+            
+            # Clear RC override and disarm
+            self.clear_rc_override()
+            time.sleep(0.5)
+            
+            # Disarm the vehicle
+            logger.info("Disarming motors...")
+            self.vehicle.armed = False
+            
+            # Wait for disarm to complete
+            timeout = 5
+            start_time = time.time()
+            while self.vehicle.armed and (time.time() - start_time) < timeout:
+                time.sleep(0.1)
+            
+            if not self.vehicle.armed:
+                logger.info("Landing completed successfully - vehicle disarmed")
+                return True
+            else:
+                logger.warning("Landing completed but vehicle still armed")
+                return True  # Still consider it successful if we're on the ground
+            
+        except Exception as e:
+            logger.error(f"Error during incremental throttle landing: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Try to clear RC override and set safe mode
+            try:
+                self.clear_rc_override()
+                self.set_mode('LOITER')
+            except:
+                pass
             return False
     
     def send_rc_override(self, roll: int, pitch: int, yaw: int, throttle: int) -> bool:

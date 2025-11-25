@@ -652,28 +652,26 @@ class DroneClient:
             logger.warning(f"Requested altitude {takeoff_altitude}m exceeds max {max_altitude}m, limiting")
             takeoff_altitude = max_altitude
         
-        # Use incremental throttle takeoff if ToF sensors available
-        if self.tof_sensors:
-            logger.info(f"Starting incremental throttle takeoff to {takeoff_altitude}m using bottom sensor")
-            
-            # Create callback function to get bottom distance
-            def get_bottom_distance():
-                return self.tof_sensors.get_bottom_distance()
-            
-            # Get ToF config
-            tof_config = self.config.get_tof_config()
-            ground_threshold = tof_config.get('ground_threshold', 0.08)  # 8cm default
-            
-            success = self.drone_controller.incremental_throttle_takeoff(
-                get_bottom_distance=get_bottom_distance,
-                target_altitude=takeoff_altitude,
-                max_altitude=max_altitude,
-                ground_threshold=ground_threshold
-            )
-        else:
-            # Fallback to simple takeoff if ToF sensors not available
-            logger.warning("ToF sensors not available - using simple_takeoff")
-            success = self.drone_controller.simple_takeoff(takeoff_altitude)
+        # ToF sensors are mandatory for takeoff
+        if not self.tof_sensors:
+            return {'success': False, 'message': 'Cannot takeoff - ToF sensors not available. ToF sensors are required for safe flight.'}
+        
+        logger.info(f"Starting incremental throttle takeoff to {takeoff_altitude}m using bottom sensor")
+        
+        # Create callback function to get bottom distance
+        def get_bottom_distance():
+            return self.tof_sensors.get_bottom_distance()
+        
+        # Get ToF config
+        tof_config = self.config.get_tof_config()
+        ground_threshold = tof_config.get('ground_threshold', 0.08)  # 8cm default
+        
+        success = self.drone_controller.incremental_throttle_takeoff(
+            get_bottom_distance=get_bottom_distance,
+            target_altitude=takeoff_altitude,
+            max_altitude=max_altitude,
+            ground_threshold=ground_threshold
+        )
         
         if success:
             return {'success': True, 'message': f'Takeoff to {takeoff_altitude}m started'}
@@ -685,12 +683,27 @@ class DroneClient:
         if not self.drone_controller or not self.drone_controller.is_connected():
             return {'success': False, 'message': 'Drone controller not connected'}
         
-        # Use DroneKit simple_land
-        logger.info("Starting landing sequence using DroneKit")
-        success = self.drone_controller.simple_land()
+        # ToF sensors are mandatory for landing
+        if not self.tof_sensors:
+            return {'success': False, 'message': 'Cannot land - ToF sensors not available. ToF sensors are required for safe landing.'}
+        
+        logger.info("Starting incremental throttle landing using bottom sensor")
+        
+        # Create callback function to get bottom distance
+        def get_bottom_distance():
+            return self.tof_sensors.get_bottom_distance()
+        
+        # Get ToF config
+        tof_config = self.config.get_tof_config()
+        ground_threshold = tof_config.get('ground_threshold', 0.08)  # 8cm default
+        
+        success = self.drone_controller.incremental_throttle_land(
+            get_bottom_distance=get_bottom_distance,
+            ground_threshold=ground_threshold
+        )
         
         if success:
-            return {'success': True, 'message': 'Landing sequence started'}
+            return {'success': True, 'message': 'Landing sequence completed'}
         else:
             return {'success': False, 'message': 'Landing command failed'}
     
@@ -770,18 +783,21 @@ class DroneClient:
         
         checks = {}
         
-        # Check GPS lock
-        if self.telemetry_reader and self.telemetry_reader.is_connected():
-            mavlink_data = self.telemetry_reader.get_telemetry()
-            gps_fix = mavlink_data.get('gps_fix_type', 0)
-            gps_satellites = mavlink_data.get('gps_satellites', 0)
-            checks['gps'] = {
-                'fix_type': gps_fix,
-                'satellites': gps_satellites,
-                'ok': gps_fix >= 2 and gps_satellites >= 6
+        # Check ToF sensors (mandatory for flight)
+        if self.tof_sensors and self.tof_sensors.initialized:
+            # Try to read sensors to verify they're working
+            forward_dist = self.tof_sensors.get_forward_distance()
+            bottom_dist = self.tof_sensors.get_bottom_distance()
+            checks['tof_sensors'] = {
+                'forward_available': forward_dist is not None,
+                'bottom_available': bottom_dist is not None,
+                'ok': forward_dist is not None and bottom_dist is not None
             }
         else:
-            checks['gps'] = {'ok': None, 'message': 'Telemetry reader not connected'}
+            checks['tof_sensors'] = {
+                'ok': False,
+                'message': 'ToF sensors not initialized - required for flight'
+            }
         
         # Check battery
         if self.telemetry_reader and self.telemetry_reader.is_connected():
@@ -809,7 +825,13 @@ class DroneClient:
             'ok': mode is not None
         }
         
-        all_ok = all(check.get('ok', False) for check in checks.values() if check.get('ok') is not False)
+        # ToF sensors are mandatory - must be ok for flight
+        tof_ok = checks.get('tof_sensors', {}).get('ok', False)
+        battery_ok = checks.get('battery', {}).get('ok', False) if checks.get('battery', {}).get('ok') is not None else True  # Optional if unavailable
+        armed_ok = checks.get('armed', {}).get('ok', False)
+        mode_ok = checks.get('mode', {}).get('ok', False)
+        
+        all_ok = tof_ok and battery_ok and armed_ok and mode_ok
         
         return {
             'success': all_ok,
