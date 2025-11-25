@@ -157,7 +157,7 @@ class TelemetryCollector:
             },
             'altitude': self.last_telemetry.altitude,
             'relative_alt': self.last_telemetry.relative_alt,
-            'height_agl': height_agl,  # Height above ground level
+            'height_agl': height_agl,  # Height above ground level (from ToF sensor if available)
             'altitude_reference': self.initial_altitude_reference,
             'battery': self.last_telemetry.battery,
             'battery_voltage': self.last_telemetry.battery_voltage,
@@ -292,11 +292,18 @@ class TelemetryCollector:
     def get_height_agl(self) -> Optional[float]:
         """Get height above ground level (AGL) in meters.
         
-        Calculates: height_agl = current_relative_alt - initial_altitude_reference
+        Prioritizes ToF bottom sensor reading over GPS-based calculation.
+        ToF sensor reading is direct height measurement.
         
         Returns:
-            Height above ground level in meters, or None if reference not captured
+            Height above ground level in meters, or None if unavailable
         """
+        # Prioritize ToF bottom sensor (direct measurement)
+        if self.last_telemetry.tof_down is not None:
+            # ToF reading is already in meters and represents height AGL
+            return max(0.0, self.last_telemetry.tof_down)
+        
+        # Fallback to GPS-based calculation if ToF unavailable
         if not self.altitude_reference_captured or self.initial_altitude_reference is None:
             return None
         

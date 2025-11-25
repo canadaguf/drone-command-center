@@ -29,6 +29,7 @@ from .vision.yolo_detector import YOLODetector
 from .vision.object_tracker import ObjectTracker
 from .controllers.tracking_controller import TrackingController
 from .sensors.camera import CameraManager
+from .sensors.tof_sensors import ToFSensorManager
 
 # Setup logging
 logging.basicConfig(
@@ -66,6 +67,9 @@ class DroneClient:
         self.object_tracker = None
         self.tracking_controller = None
         
+        # ToF sensors
+        self.tof_sensors = None
+        
         # State
         self.running = False
         self.initialized = False
@@ -74,6 +78,7 @@ class DroneClient:
         self.telemetry_loop_task = None
         self.command_loop_task = None
         self.vision_loop_task = None
+        self.tof_loop_task = None
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -83,6 +88,44 @@ class DroneClient:
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum} (Ctrl+C), shutting down gracefully...")
         self.running = False
+    
+    def _enforce_height_limit(self, vz: float, max_height: float = 2.0) -> float:
+        """Enforce maximum height limit using bottom ToF sensor.
+        
+        Args:
+            vz: Desired vertical velocity (m/s, positive = up)
+            max_height: Maximum allowed height in meters (default 2.0m)
+            
+        Returns:
+            Adjusted vertical velocity (may be reduced or set to negative)
+        """
+        if not self.tof_sensors:
+            return vz  # No sensor, can't enforce
+        
+        current_height = self.tof_sensors.get_bottom_distance()
+        
+        if current_height is None:
+            # Sensor unavailable - be conservative
+            if vz > 0:
+                logger.warning("Height limit check: sensor unavailable, reducing upward velocity")
+                return vz * 0.5  # Reduce upward velocity
+            return vz
+        
+        # Check if at or above max height
+        if current_height >= max_height:
+            if vz > 0:
+                logger.warning(f"Height limit exceeded ({current_height:.3f}m >= {max_height}m) - preventing ascent")
+                return 0.0  # Stop upward movement
+            # Allow downward movement
+            return vz
+        
+        # Check if approaching limit (within 0.2m)
+        if current_height >= (max_height - 0.2):
+            if vz > 0:
+                logger.debug(f"Approaching height limit ({current_height:.3f}m) - reducing upward velocity")
+                return vz * 0.3  # Reduce upward velocity
+        
+        return vz
     
     async def initialize(self) -> bool:
         """Initialize all components.
@@ -109,6 +152,14 @@ class DroneClient:
             
             # Initialize telemetry collector
             self.telemetry = TelemetryCollector()
+            
+            # Initialize ToF sensors
+            tof_config = self.config.get_tof_config()
+            self.tof_sensors = ToFSensorManager(tof_config)
+            if not self.tof_sensors.initialize():
+                logger.warning("Failed to initialize ToF sensors - continuing without them")
+                logger.warning("Height control and distance tracking may be limited")
+                self.tof_sensors = None
             
             # Initialize WebSocket client
             backend_config = self.config.get_backend_config()
@@ -151,15 +202,12 @@ class DroneClient:
                 tracking_config['fov_horizontal'] = camera_config.get('fov_horizontal', 120)
                 tracking_config['fov_vertical'] = camera_config.get('fov_vertical', 90)
                 tracking_config['pid_gains'] = self.config.get_pid_config()
-                tracking_config['target_distance'] = tracking_config.get('distance_modes', {}).get('medium', 3.0)
+                # Fixed 3m target distance (using forward ToF sensor)
+                tracking_config['target_distance'] = tracking_config.get('target_distance', 3.0)
                 tracking_config['target_altitude'] = tracking_config.get('altitude', {}).get('target_altitude', 1.5)
                 tracking_config['lost_target_timeout'] = tracking_config.get('lost_target', {}).get('hover_timeout', 2.0)
                 
                 self.tracking_controller = TrackingController(tracking_config)
-                
-                # Update telemetry with distance mode
-                default_mode = tracking_config.get('default_mode', 'medium')
-                self.telemetry.update_distance_mode(default_mode)
             
             # Setup callbacks
             self._setup_callbacks()
@@ -204,6 +252,10 @@ class DroneClient:
             self._command_loop(),
             self.websocket.start()
         ]
+        
+        # Add ToF reading loop if sensors are available
+        if self.tof_sensors:
+            tasks.append(self._tof_reading_loop())
         
         # Add vision loop if components are available
         if self.yolo_detector and self.object_tracker:
@@ -315,6 +367,30 @@ class DroneClient:
                 logger.error(f"Error in command loop: {e}")
                 await asyncio.sleep(0.1)
     
+    async def _tof_reading_loop(self) -> None:
+        """ToF sensor reading loop."""
+        logger.info("ToF reading loop started")
+        
+        if not self.tof_sensors:
+            logger.info("ToF reading loop disabled - sensors not available")
+            while self.running:
+                await asyncio.sleep(1)
+            return
+        
+        while self.running:
+            try:
+                # Read all ToF sensors
+                tof_data = self.tof_sensors.get_all_readings()
+                
+                # Update telemetry with ToF readings
+                self.telemetry.update_from_tof(tof_data)
+                
+                await asyncio.sleep(0.1)  # 10 Hz reading rate
+                
+            except Exception as e:
+                logger.error(f"Error in ToF reading loop: {e}")
+                await asyncio.sleep(0.1)
+    
     async def _vision_loop(self) -> None:
         """Vision processing and tracking loop."""
         logger.info("Vision loop started")
@@ -344,12 +420,18 @@ class DroneClient:
                 height_agl = self.telemetry.get_height_agl()
                 current_time = time.time()
                 
+                # Get forward ToF distance if available
+                forward_tof_distance = None
+                if self.tof_sensors:
+                    forward_tof_distance = self.tof_sensors.get_forward_distance()
+                
                 # Update tracking controller and get control command
                 if self.tracking_controller and self.tracking_controller.is_tracking():
                     control_command = self.tracking_controller.update(
                         tracked_detections, 
                         current_altitude=height_agl,
-                        timestamp=current_time
+                        timestamp=current_time,
+                        forward_tof_distance=forward_tof_distance
                     )
                     
                     if control_command:
@@ -359,11 +441,14 @@ class DroneClient:
                             if self.drone_controller.get_mode() != 'GUIDED':
                                 self.drone_controller.set_mode('GUIDED')
                             
+                            # Enforce height limit on vertical velocity
+                            adjusted_vz = self._enforce_height_limit(control_command.vz)
+                            
                             # Send velocity command
                             self.drone_controller.send_velocity_command(
                                 vx=control_command.vx,
                                 vy=control_command.vy,
-                                vz=control_command.vz,
+                                vz=adjusted_vz,
                                 yaw_rate=control_command.yaw_rate
                             )
                     else:
@@ -416,6 +501,10 @@ class DroneClient:
         # Cleanup camera
         if self.camera:
             self.camera.cleanup()
+        
+        # Cleanup ToF sensors
+        if self.tof_sensors:
+            self.tof_sensors.cleanup()
         
         logger.info("Drone client shutdown complete")
     
@@ -557,9 +646,34 @@ class DroneClient:
         if takeoff_altitude is None:
             takeoff_altitude = self.config.get_mavlink_config().get('takeoff_altitude', 1.5)
         
-        # Use DroneKit simple_takeoff
-        logger.info(f"Starting takeoff to {takeoff_altitude}m using DroneKit")
-        success = self.drone_controller.simple_takeoff(takeoff_altitude)
+        # Limit to max 2m
+        max_altitude = 2.0
+        if takeoff_altitude > max_altitude:
+            logger.warning(f"Requested altitude {takeoff_altitude}m exceeds max {max_altitude}m, limiting")
+            takeoff_altitude = max_altitude
+        
+        # Use incremental throttle takeoff if ToF sensors available
+        if self.tof_sensors:
+            logger.info(f"Starting incremental throttle takeoff to {takeoff_altitude}m using bottom sensor")
+            
+            # Create callback function to get bottom distance
+            def get_bottom_distance():
+                return self.tof_sensors.get_bottom_distance()
+            
+            # Get ToF config
+            tof_config = self.config.get_tof_config()
+            ground_threshold = tof_config.get('ground_threshold', 0.08)  # 8cm default
+            
+            success = self.drone_controller.incremental_throttle_takeoff(
+                get_bottom_distance=get_bottom_distance,
+                target_altitude=takeoff_altitude,
+                max_altitude=max_altitude,
+                ground_threshold=ground_threshold
+            )
+        else:
+            # Fallback to simple takeoff if ToF sensors not available
+            logger.warning("ToF sensors not available - using simple_takeoff")
+            success = self.drone_controller.simple_takeoff(takeoff_altitude)
         
         if success:
             return {'success': True, 'message': f'Takeoff to {takeoff_altitude}m started'}

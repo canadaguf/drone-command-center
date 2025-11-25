@@ -260,6 +260,140 @@ class DroneController:
             logger.error(f"Error during takeoff: {e}")
             return False
     
+    def incremental_throttle_takeoff(self, 
+                                     get_bottom_distance: callable,
+                                     target_altitude: float = 1.5,
+                                     max_altitude: float = 2.0,
+                                     ground_threshold: float = 0.08,
+                                     throttle_increment: int = 8,
+                                     increment_interval: float = 0.1,
+                                     max_timeout: float = 30.0) -> bool:
+        """Incremental throttle takeoff using bottom ToF sensor.
+        
+        Starts at minimum throttle and increments by 1% until liftoff is detected,
+        then continues to target altitude.
+        
+        Args:
+            get_bottom_distance: Callable that returns current bottom sensor distance in meters
+            target_altitude: Target altitude in meters (default 1.5m)
+            max_altitude: Maximum allowed altitude in meters (default 2.0m)
+            ground_threshold: Distance threshold to detect liftoff (default 0.08m = 8cm)
+            throttle_increment: Throttle increment per step (default 8 = 1% of 800 range)
+            increment_interval: Time between increments in seconds (default 0.1s)
+            max_timeout: Maximum time for takeoff in seconds (default 30s)
+            
+        Returns:
+            True if takeoff successful, False otherwise
+        """
+        if not self.is_connected():
+            logger.error("Cannot takeoff: not connected")
+            return False
+        
+        if not self.vehicle.armed:
+            logger.error("Cannot takeoff: vehicle not armed")
+            return False
+        
+        try:
+            # Ensure GUIDED mode
+            if self.vehicle.mode.name != 'GUIDED':
+                if not self.set_mode('GUIDED'):
+                    logger.error("Failed to set GUIDED mode for takeoff")
+                    return False
+            
+            logger.info(f"Starting incremental throttle takeoff to {target_altitude}m (max {max_altitude}m)")
+            
+            # Start at minimum throttle
+            current_throttle = 1100  # Minimum throttle value
+            start_time = time.time()
+            liftoff_detected = False
+            
+            # Get initial ground reading
+            initial_distance = get_bottom_distance()
+            if initial_distance is None:
+                logger.warning("Cannot read bottom sensor - falling back to simple_takeoff")
+                return self.simple_takeoff(target_altitude)
+            
+            logger.info(f"Initial ground distance: {initial_distance:.3f}m")
+            
+            # Incremental throttle rise until liftoff
+            while not liftoff_detected and (time.time() - start_time) < max_timeout:
+                # Set throttle
+                self.send_rc_override(1500, 1500, 1500, current_throttle)
+                
+                # Check bottom sensor
+                current_distance = get_bottom_distance()
+                
+                if current_distance is not None:
+                    # Check if liftoff detected (distance increased beyond ground threshold)
+                    if current_distance > ground_threshold:
+                        liftoff_detected = True
+                        logger.info(f"Liftoff detected! Distance: {current_distance:.3f}m, Throttle: {current_throttle}")
+                        break
+                
+                # Increment throttle
+                current_throttle += throttle_increment
+                if current_throttle > 1900:
+                    current_throttle = 1900
+                    logger.warning("Maximum throttle reached before liftoff")
+                    break
+                
+                time.sleep(increment_interval)
+            
+            if not liftoff_detected:
+                logger.error("Liftoff not detected within timeout - aborting")
+                self.clear_rc_override()
+                return False
+            
+            # Now use velocity commands to reach target altitude
+            logger.info(f"Ascending to target altitude {target_altitude}m...")
+            
+            # Use velocity commands for smooth ascent
+            ascent_start_time = time.time()
+            while (time.time() - ascent_start_time) < max_timeout:
+                current_distance = get_bottom_distance()
+                
+                if current_distance is None:
+                    logger.warning("Lost bottom sensor reading during ascent")
+                    # Continue with velocity command
+                    self.send_velocity_command(0.0, 0.0, 0.3, 0.0)  # Slow upward velocity
+                    time.sleep(0.1)
+                    continue
+                
+                # Check max altitude limit
+                if current_distance > max_altitude:
+                    logger.warning(f"Max altitude exceeded ({current_distance:.3f}m > {max_altitude}m) - stopping ascent")
+                    self.send_velocity_command(0.0, 0.0, 0.0, 0.0)  # Stop
+                    break
+                
+                # Check if target reached
+                if current_distance >= target_altitude:
+                    logger.info(f"Target altitude reached: {current_distance:.3f}m")
+                    self.send_velocity_command(0.0, 0.0, 0.0, 0.0)  # Hover
+                    break
+                
+                # Calculate upward velocity (proportional to remaining distance)
+                remaining_distance = target_altitude - current_distance
+                upward_velocity = min(0.5, remaining_distance * 0.5)  # Max 0.5 m/s
+                
+                self.send_velocity_command(0.0, 0.0, upward_velocity, 0.0)
+                time.sleep(0.1)
+            
+            # Clear RC override and switch to velocity control
+            self.clear_rc_override()
+            
+            # Final hover command
+            self.send_velocity_command(0.0, 0.0, 0.0, 0.0)
+            
+            logger.info("Incremental throttle takeoff completed")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error during incremental throttle takeoff: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.clear_rc_override()
+            return False
+    
     def simple_land(self) -> bool:
         """Land the vehicle.
         

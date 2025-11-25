@@ -29,6 +29,10 @@ camera:
 
 # Tracking configuration
 tracking:
+  # Fixed 3m distance for object following (using forward ToF sensor)
+  target_distance: 3.0  # Fixed distance in meters
+  
+  # Distance modes kept for reference (not used - fixed 3m)
   distance_modes:
     close: 2.0
     medium: 4.0
@@ -40,7 +44,7 @@ tracking:
     target_altitude: 1.5  # Target altitude in meters (will be maintained dynamically)
     base_hover_throttle: 50  # Base throttle for hover (calibrate for your drone - typically 40-60)
     min_height: 0.5
-    max_height: 2.0
+    max_height: 2.0  # Maximum height limit enforced by bottom ToF sensor
   
   lost_target:
     hover_timeout: 2.0
@@ -60,29 +64,19 @@ tracking:
 
 # TOF sensors configuration
 tof_sensors:
-  multiplexer_address: 0x70
+  multiplexer_address: 0x70  # TCA9548A I2C multiplexer address
+  ground_threshold: 0.08  # Ground detection threshold in meters (8cm) - when stationary on ground, reading is ~5cm
+  ground_margin: 0.03  # Margin of error for ground detection (3cm)
+  reading_rate: 10  # Reading rate in Hz (10 Hz = 0.1s interval)
   sensors:
     - name: "forward"
       channel: 0
       direction: "front"
-      max_range: 4.0
+      max_range: 4.0  # Maximum reliable range in meters
     - name: "down"
       channel: 1
       direction: "down"
-      max_range: 4.0
-  # Easy to add more sensors:
-  # - name: "left"
-  #   channel: 2
-  #   direction: "left"
-  #   max_range: 4.0
-  # - name: "right"
-  #   channel: 3
-  #   direction: "right"
-  #   max_range: 4.0
-  # - name: "back"
-  #   channel: 4
-  #   direction: "back"
-  #   max_range: 4.0
+      max_range: 4.0  # Maximum reliable range in meters
 
 # Safety configuration
 safety:

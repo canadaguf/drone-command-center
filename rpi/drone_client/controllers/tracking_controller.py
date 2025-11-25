@@ -41,8 +41,8 @@ class TrackingController:
         self.fov_horizontal = config.get('fov_horizontal', 120)  # degrees
         self.fov_vertical = config.get('fov_vertical', 90)  # degrees
         
-        # Tracking parameters
-        self.target_distance = config.get('target_distance', 3.0)  # meters
+        # Tracking parameters - fixed 3m distance
+        self.target_distance = 3.0  # Fixed 3 meters (always)
         self.target_altitude = config.get('target_altitude', 1.5)  # meters
         
         # PID gains
@@ -105,13 +105,15 @@ class TrackingController:
     
     def update(self, tracked_detections: List[Dict[str, Any]], 
                current_altitude: Optional[float] = None,
-               timestamp: float = 0.0) -> Optional[ControlCommand]:
+               timestamp: float = 0.0,
+               forward_tof_distance: Optional[float] = None) -> Optional[ControlCommand]:
         """Update controller with new detections.
         
         Args:
             tracked_detections: List of tracked detections with 'id' and 'bbox'
             current_altitude: Current altitude AGL (meters)
             timestamp: Current timestamp
+            forward_tof_distance: Forward ToF sensor distance in meters (optional)
             
         Returns:
             ControlCommand if tracking active, None otherwise
@@ -139,7 +141,7 @@ class TrackingController:
         self.last_detection_time = timestamp
         
         # Calculate control command
-        command = self._calculate_command(target_detection, current_altitude)
+        command = self._calculate_command(target_detection, current_altitude, forward_tof_distance)
         
         # Apply smoothing
         if self.velocity_smoothing > 0:
@@ -162,12 +164,14 @@ class TrackingController:
         return command
     
     def _calculate_command(self, detection: Dict[str, Any], 
-                          current_altitude: Optional[float]) -> ControlCommand:
+                          current_altitude: Optional[float],
+                          forward_tof_distance: Optional[float] = None) -> ControlCommand:
         """Calculate control command from detection.
         
         Args:
             detection: Detection dictionary with 'bbox' and 'center'
             current_altitude: Current altitude AGL
+            forward_tof_distance: Forward ToF sensor distance in meters (preferred)
             
         Returns:
             ControlCommand
@@ -183,14 +187,24 @@ class TrackingController:
         error_x = center[0] - frame_center_x  # Positive = object to the right
         error_y = center[1] - frame_center_y  # Positive = object below
         
-        # Calculate distance from bbox size
-        bbox_width = bbox[2] - bbox[0]
-        bbox_height = bbox[3] - bbox[1]
-        estimated_distance = self._estimate_distance(bbox_width, bbox_height)
+        # Use forward ToF sensor distance if available, otherwise fallback to bbox estimation
+        if forward_tof_distance is not None and 0.3 <= forward_tof_distance <= 4.0:
+            # Use ToF sensor reading (valid range 0.3-4.0m)
+            current_distance = forward_tof_distance
+            logger.debug(f"Using ToF distance: {current_distance:.3f}m")
+        else:
+            # Fallback to bbox-based estimation
+            bbox_width = bbox[2] - bbox[0]
+            bbox_height = bbox[3] - bbox[1]
+            current_distance = self._estimate_distance(bbox_width, bbox_height)
+            if forward_tof_distance is not None:
+                logger.debug(f"ToF reading out of range ({forward_tof_distance:.3f}m), using bbox estimate: {current_distance:.3f}m")
+            else:
+                logger.debug(f"ToF unavailable, using bbox estimate: {current_distance:.3f}m")
         
         # Safety check
-        if estimated_distance < self.emergency_stop_threshold:
-            logger.warning(f"Emergency stop: object too close ({estimated_distance:.2f}m)")
+        if current_distance < self.emergency_stop_threshold:
+            logger.warning(f"Emergency stop: object too close ({current_distance:.2f}m)")
             return self._create_stop_command()
         
         # Calculate control outputs
@@ -201,17 +215,19 @@ class TrackingController:
         angle_error_x = (error_x / self.camera_width) * math.radians(self.fov_horizontal)
         command.yaw_rate = -self.kp_yaw * angle_error_x  # Negative for correct direction
         
-        # Forward/backward control (distance maintenance)
-        distance_error = estimated_distance - self.target_distance
-        if estimated_distance < self.yaw_only_threshold:
+        # Forward/backward control (distance maintenance) - maintain 3m distance
+        distance_error = current_distance - self.target_distance
+        if current_distance < self.yaw_only_threshold:
             # Too close - only yaw, no forward movement
             command.vx = 0.0
         else:
             # Use proportional control for forward/backward
-            command.vx = -self.kp_distance * distance_error  # Negative = forward when too far
+            # Negative = forward when too far (need to get closer)
+            # Positive = backward when too close (need to move away)
+            command.vx = -self.kp_distance * distance_error
         
         # Limit forward velocity based on safety
-        if estimated_distance < self.obstacle_threshold_forward:
+        if current_distance < self.obstacle_threshold_forward:
             command.vx = min(command.vx, 0.0)  # Only allow backward movement
         
         # Altitude control (vertical centering + altitude maintenance)
