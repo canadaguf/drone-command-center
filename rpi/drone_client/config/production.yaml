@@ -2,7 +2,7 @@
 
 # MAVLink configuration
 mavlink:
-  connection: "/dev/ttyAMA0"
+  connection: "/dev/ttyAMA10"
   baud: 256000
   takeoff_altitude: 1.5  # Default takeoff altitude in meters (AGL - Above Ground Level)
   takeoff_min_pitch: 10.0  # Minimum pitch angle for takeoff (degrees, typically 10-15)
