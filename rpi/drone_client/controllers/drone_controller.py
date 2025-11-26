@@ -669,9 +669,8 @@ class DroneController:
                     logger.error("Failed to set ALT_HOLD mode for velocity command")
                     return False
             
-            # Send velocity command using DroneKit
-            # Note: DroneKit's velocity attribute sends velocity_ned (North, East, Down)
-            # We need to convert from body frame (forward, right, up) to NED frame
+            # Send velocity command via MAVLink (vehicle.velocity is read-only)
+            # Convert from body frame (forward, right, up) to NED frame (North, East, Down)
             
             # Get current heading for conversion
             current_heading = math.radians(self.vehicle.heading)
@@ -684,16 +683,25 @@ class DroneController:
             velocity_east = vx * math.sin(current_heading) + vy * math.cos(current_heading)
             velocity_down = -vz  # NED uses down as positive
             
-            # Send velocity command
-            self.vehicle.velocity = [velocity_north, velocity_east, velocity_down]
+            # Type mask: ignore position (bits 0-2), use velocity (bits 3-5), 
+            # ignore acceleration (bits 6-8), ignore force (bit 9), ignore yaw (bit 10), use yaw_rate (bit 11)
+            # Binary: 0b0000111111000111 = 0x3F07 = 16135
+            type_mask = 0b0000111111000111  # Ignore position, acceleration, force, yaw; use velocity and yaw_rate
             
-            # Send yaw rate if non-zero
-            if abs(yaw_rate) > 0.01:
-                # Convert yaw rate to heading change
-                # For now, we'll use a simple approach: set heading relative to current
-                # Note: This is a simplified approach - full implementation would use yaw rate directly
-                # DroneKit doesn't directly support yaw rate, so we'll need to use MAVLink
-                self._send_yaw_rate_mavlink(yaw_rate)
+            # Send velocity command via MAVLink SET_POSITION_TARGET_LOCAL_NED
+            msg = self.vehicle.message_factory.set_position_target_local_ned_encode(
+                0,  # time_boot_ms (not used)
+                self.vehicle.target_system,
+                self.vehicle.target_component,
+                8,  # frame (MAV_FRAME_LOCAL_NED)
+                type_mask,
+                0, 0, 0,  # x, y, z (ignored - position)
+                velocity_north, velocity_east, velocity_down,  # vx, vy, vz (velocity in NED frame)
+                0, 0, 0,  # afx, afy, afz (ignored - acceleration)
+                0,  # yaw (ignored)
+                yaw_rate  # yaw_rate (rad/s)
+            )
+            self.vehicle.send_mavlink(msg)
             
             return True
             
