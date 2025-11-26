@@ -437,9 +437,9 @@ class DroneClient:
                     if control_command:
                         # Send velocity command to drone
                         if self.drone_controller and self.drone_controller.is_connected():
-                            # Ensure GUIDED mode for following
-                            if self.drone_controller.get_mode() != 'GUIDED':
-                                self.drone_controller.set_mode('GUIDED')
+                            # Ensure ALT_HOLD mode for following
+                            if self.drone_controller.get_mode() != 'ALT_HOLD':
+                                self.drone_controller.set_mode('ALT_HOLD')
                             
                             # Enforce height limit on vertical velocity
                             adjusted_vz = self._enforce_height_limit(control_command.vz)
@@ -753,10 +753,10 @@ class DroneClient:
         # Set target in tracking controller
         success = self.tracking_controller.set_target(target_id)
         if success:
-            # Ensure GUIDED mode for following
+            # Ensure ALT_HOLD mode for following
             if self.drone_controller and self.drone_controller.is_connected():
-                if self.drone_controller.get_mode() != 'GUIDED':
-                    self.drone_controller.set_mode('GUIDED')
+                if self.drone_controller.get_mode() != 'ALT_HOLD':
+                    self.drone_controller.set_mode('ALT_HOLD')
             
             return {'success': True, 'message': f'Following target ID {target_id}'}
         else:

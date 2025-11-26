@@ -111,11 +111,11 @@ class DroneController:
                 logger.info("Vehicle already armed")
                 return True
             
-            # Set mode to GUIDED (required for arming in some cases)
-            if self.vehicle.mode.name != 'GUIDED':
-                logger.info("Setting mode to GUIDED for arming")
-                self.vehicle.mode = VehicleMode("GUIDED")
-                while self.vehicle.mode.name != 'GUIDED':
+            # Set mode to ALT_HOLD (works indoors without GPS)
+            if self.vehicle.mode.name != 'ALT_HOLD':
+                logger.info("Setting mode to ALT_HOLD for arming")
+                self.vehicle.mode = VehicleMode("ALT_HOLD")
+                while self.vehicle.mode.name != 'ALT_HOLD':
                     time.sleep(0.1)
             
             # Arm the vehicle
@@ -239,10 +239,10 @@ class DroneController:
             # Use provided altitude or default
             target_altitude = altitude if altitude is not None else self.takeoff_altitude
             
-            # Ensure GUIDED mode
-            if self.vehicle.mode.name != 'GUIDED':
-                if not self.set_mode('GUIDED'):
-                    logger.error("Failed to set GUIDED mode for takeoff")
+            # Ensure ALT_HOLD mode
+            if self.vehicle.mode.name != 'ALT_HOLD':
+                if not self.set_mode('ALT_HOLD'):
+                    logger.error("Failed to set ALT_HOLD mode for takeoff")
                     return False
             
             logger.info(f"Taking off to {target_altitude}m...")
@@ -291,10 +291,10 @@ class DroneController:
             return False
         
         try:
-            # Ensure GUIDED mode
-            if self.vehicle.mode.name != 'GUIDED':
-                if not self.set_mode('GUIDED'):
-                    logger.error("Failed to set GUIDED mode for takeoff")
+            # Ensure ALT_HOLD mode
+            if self.vehicle.mode.name != 'ALT_HOLD':
+                if not self.set_mode('ALT_HOLD'):
+                    logger.error("Failed to set ALT_HOLD mode for takeoff")
                     return False
             
             logger.info(f"Starting incremental throttle takeoff to {target_altitude}m (max {max_altitude}m)")
@@ -447,10 +447,10 @@ class DroneController:
             return True
         
         try:
-            # Ensure GUIDED mode
-            if self.vehicle.mode.name != 'GUIDED':
-                if not self.set_mode('GUIDED'):
-                    logger.error("Failed to set GUIDED mode for landing")
+            # Ensure ALT_HOLD mode
+            if self.vehicle.mode.name != 'ALT_HOLD':
+                if not self.set_mode('ALT_HOLD'):
+                    logger.error("Failed to set ALT_HOLD mode for landing")
                     return False
             
             logger.info("Starting incremental throttle landing using bottom sensor")
@@ -648,7 +648,7 @@ class DroneController:
             return False
     
     def send_velocity_command(self, vx: float, vy: float, vz: float, yaw_rate: float = 0.0) -> bool:
-        """Send velocity command in GUIDED mode.
+        """Send velocity command in ALT_HOLD mode.
         
         Args:
             vx: Forward velocity (m/s, positive = forward)
@@ -663,10 +663,10 @@ class DroneController:
             return False
         
         try:
-            # Ensure GUIDED mode
-            if self.vehicle.mode.name != 'GUIDED':
-                if not self.set_mode('GUIDED'):
-                    logger.error("Failed to set GUIDED mode for velocity command")
+            # Ensure ALT_HOLD mode
+            if self.vehicle.mode.name != 'ALT_HOLD':
+                if not self.set_mode('ALT_HOLD'):
+                    logger.error("Failed to set ALT_HOLD mode for velocity command")
                     return False
             
             # Send velocity command using DroneKit
