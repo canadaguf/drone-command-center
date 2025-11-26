@@ -96,21 +96,46 @@ def main():
         else:
             logger.info("Drone already armed")
         
+        # Verify vehicle mode is ALT_HOLD (required for RC override)
+        current_mode = drone_controller.get_mode()
+        logger.info(f"Current vehicle mode: {current_mode}")
+        if current_mode != 'ALT_HOLD':
+            logger.info(f"Setting mode to ALT_HOLD (required for RC override)...")
+            if not drone_controller.set_mode('ALT_HOLD'):
+                logger.error("Failed to set ALT_HOLD mode - aborting")
+                return False
+            logger.info("Mode set to ALT_HOLD successfully")
+        
         # Step 5: Takeoff to 1.5m
         logger.info("\n[4/7] Taking off to 1.5m...")
         target_altitude = 1.5  # meters
         
-        # Get bottom distance function for takeoff
+        # Get bottom distance function for takeoff with retry logic
         def get_bottom_distance():
-            return tof_sensors.get_bottom_distance()
+            """Get bottom distance with retry for reliability."""
+            for attempt in range(3):
+                distance = tof_sensors.get_bottom_distance()
+                if distance is not None:
+                    return distance
+                time.sleep(0.05)  # Small delay between retries
+            return None
+        
+        # Verify RC override capability before takeoff
+        logger.info("Verifying RC override capability...")
+        test_throttle = 1500
+        if not drone_controller.send_rc_override(1500, 1500, 1500, test_throttle):
+            logger.error("Failed to send RC override - check vehicle mode and connection")
+            return False
+        time.sleep(0.1)
+        logger.info("RC override test successful")
         
         success = drone_controller.incremental_throttle_takeoff(
             get_bottom_distance=get_bottom_distance,
             target_altitude=target_altitude,
             max_altitude=2.0,  # Safety limit
-            ground_threshold=0.08,  # 8cm ground detection threshold
-            throttle_increment=3,  # Small increments for smooth takeoff
-            increment_interval=0.25,  # 0.25s between increments
+            ground_threshold=0.15,  # 15cm ground detection threshold (more reliable than 8cm)
+            throttle_increment=10,  # Larger increments (10 units = 1.25% of range per step)
+            increment_interval=0.2,  # 0.2s between increments (faster updates)
             max_timeout=60.0  # 60 second timeout
         )
         
@@ -126,13 +151,21 @@ def main():
         hover_start_time = time.time()
         altitude_tolerance = 0.10  # 10cm tolerance for altitude monitoring
         last_altitude_log = 0.0
+        sensor_failure_count = 0
+        max_sensor_failures = 10  # Allow some sensor failures during hover
         
         while (time.time() - hover_start_time) < hover_duration:
             elapsed = time.time() - hover_start_time
             remaining = hover_duration - elapsed
             
-            # Read current altitude
-            current_altitude = tof_sensors.get_bottom_distance()
+            # Read current altitude with retry
+            current_altitude = None
+            for attempt in range(3):
+                current_altitude = tof_sensors.get_bottom_distance()
+                if current_altitude is not None:
+                    sensor_failure_count = 0
+                    break
+                time.sleep(0.05)
             
             if current_altitude is not None:
                 # Log altitude every 5 seconds or if significant change
@@ -152,9 +185,15 @@ def main():
                     # Maintain position with zero velocity
                     drone_controller.send_velocity_command(0.0, 0.0, 0.0, 0.0)
             else:
-                logger.warning("ToF sensor reading failed during hover - maintaining zero velocity")
-                # Continue with zero velocity if sensor fails
-                drone_controller.send_velocity_command(0.0, 0.0, 0.0, 0.0)
+                sensor_failure_count += 1
+                if sensor_failure_count <= max_sensor_failures:
+                    logger.warning(f"ToF sensor reading failed during hover ({sensor_failure_count}/{max_sensor_failures}) - maintaining zero velocity")
+                    # Continue with zero velocity if sensor fails
+                    drone_controller.send_velocity_command(0.0, 0.0, 0.0, 0.0)
+                else:
+                    logger.error("Too many sensor failures during hover - continuing with velocity commands")
+                    # Continue anyway, but log the issue
+                    drone_controller.send_velocity_command(0.0, 0.0, 0.0, 0.0)
             
             time.sleep(0.2)  # Update every 200ms
         
@@ -164,8 +203,8 @@ def main():
         logger.info("\n[6/7] Landing...")
         success = drone_controller.incremental_throttle_land(
             get_bottom_distance=get_bottom_distance,
-            ground_threshold=0.08,  # 8cm ground detection threshold
-            throttle_decrement=4,  # Small decrements for smooth landing
+            ground_threshold=0.12,  # 12cm ground detection threshold (more reliable)
+            throttle_decrement=8,  # Larger decrements for controlled landing
             decrement_interval=0.15,  # 0.15s between decrements
             min_throttle=1100,  # Minimum throttle
             max_timeout=60.0  # 60 second timeout
