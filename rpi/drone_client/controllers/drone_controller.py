@@ -927,19 +927,34 @@ class DroneController:
             # Clamp distance to valid range
             distance_mm = max(min_distance_mm, min(max_distance_mm, distance_mm))
             
+            # Ensure values are within valid range for unsigned integers
+            distance_mm = max(0, min(4294967295, distance_mm))
+            min_distance_mm = max(0, min(4294967295, min_distance_mm))
+            max_distance_mm = max(0, min(4294967295, max_distance_mm))
+            
             # MAV_DISTANCE_SENSOR_LASER = 1 (for ToF sensors)
             sensor_type = 1
             
+            # Get time_boot_ms from vehicle if available, otherwise use 0
+            # time_boot_ms should be milliseconds since boot, not absolute time
+            try:
+                time_boot_ms = self.vehicle.time_boot_ms if hasattr(self.vehicle, 'time_boot_ms') else 0
+            except:
+                time_boot_ms = 0
+            
+            # Ensure time_boot_ms is within valid unsigned 32-bit range
+            time_boot_ms = max(0, min(4294967295, int(time_boot_ms)))
+            
             # Create DISTANCE_SENSOR message
             msg = self.vehicle.message_factory.distance_sensor_encode(
-                int(time.time() * 1000),  # time_boot_ms
-                min_distance_mm,           # min_distance (mm)
+                time_boot_ms,             # time_boot_ms (milliseconds since boot)
+                min_distance_mm,          # min_distance (mm)
                 max_distance_mm,          # max_distance (mm)
-                distance_mm,              # current_distance (mm)
-                sensor_type,              # type (MAV_DISTANCE_SENSOR_LASER)
-                sensor_id,                # id (0-7)
-                orientation,              # orientation (25=downward, 0=forward)
-                0                         # covariance (0 = unknown/ignored)
+                distance_mm,             # current_distance (mm)
+                sensor_type,             # type (MAV_DISTANCE_SENSOR_LASER)
+                sensor_id,               # id (0-7)
+                orientation,             # orientation (25=downward, 0=forward)
+                0                        # covariance (0 = unknown/ignored)
             )
             
             self.vehicle.send_mavlink(msg)
@@ -947,6 +962,8 @@ class DroneController:
             
         except Exception as e:
             logger.error(f"Error sending distance sensor data: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return False
     
     def get_telemetry(self) -> Dict[str, Any]:
