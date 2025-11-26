@@ -14,7 +14,19 @@ Usage:
 import sys
 import time
 import logging
+import collections
 from pathlib import Path
+
+# Python 3.13 compatibility fix for dronekit
+# collections.MutableMapping was removed in Python 3.13
+if sys.version_info >= (3, 13):
+    import collections.abc
+    if not hasattr(collections, 'MutableMapping'):
+        collections.MutableMapping = collections.abc.MutableMapping
+    if not hasattr(collections, 'Mapping'):
+        collections.Mapping = collections.abc.Mapping
+    if not hasattr(collections, 'Callable'):
+        collections.Callable = collections.abc.Callable
 
 # Add parent directory to path to import drone_client modules
 sys.path.insert(0, str(Path(__file__).parent))
