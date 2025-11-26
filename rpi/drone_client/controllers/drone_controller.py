@@ -894,6 +894,61 @@ class DroneController:
             logger.error(f"Error sending position command: {e}")
             return False
     
+    def send_distance_sensor(self, distance_m: float, sensor_id: int = 0, 
+                              orientation: int = 25, min_distance_m: float = 0.04, 
+                              max_distance_m: float = 4.0) -> bool:
+        """Send distance sensor data to ArduPilot EKF via MAVLink DISTANCE_SENSOR message.
+        
+        This allows ArduPilot's EKF to fuse ToF sensor data for better altitude estimation.
+        
+        Args:
+            distance_m: Distance reading in meters
+            sensor_id: Sensor ID (0-7, use 0 for downward, 1 for forward)
+            orientation: Sensor orientation (25=downward, 0=forward)
+            min_distance_m: Minimum measurable distance in meters
+            max_distance_m: Maximum measurable distance in meters
+            
+        Returns:
+            True if message sent successfully, False otherwise
+        """
+        if not self.is_connected():
+            return False
+        
+        try:
+            # Get target system and component
+            target_system = self.vehicle._master.target_system if hasattr(self.vehicle, '_master') else 1
+            target_component = self.vehicle._master.target_component if hasattr(self.vehicle, '_master') else 1
+            
+            # Convert meters to millimeters (MAVLink uses mm)
+            distance_mm = int(distance_m * 1000)
+            min_distance_mm = int(min_distance_m * 1000)
+            max_distance_mm = int(max_distance_m * 1000)
+            
+            # Clamp distance to valid range
+            distance_mm = max(min_distance_mm, min(max_distance_mm, distance_mm))
+            
+            # MAV_DISTANCE_SENSOR_LASER = 1 (for ToF sensors)
+            sensor_type = 1
+            
+            # Create DISTANCE_SENSOR message
+            msg = self.vehicle.message_factory.distance_sensor_encode(
+                int(time.time() * 1000),  # time_boot_ms
+                min_distance_mm,           # min_distance (mm)
+                max_distance_mm,          # max_distance (mm)
+                distance_mm,              # current_distance (mm)
+                sensor_type,              # type (MAV_DISTANCE_SENSOR_LASER)
+                sensor_id,                # id (0-7)
+                orientation,              # orientation (25=downward, 0=forward)
+                0                         # covariance (0 = unknown/ignored)
+            )
+            
+            self.vehicle.send_mavlink(msg)
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending distance sensor data: {e}")
+            return False
+    
     def get_telemetry(self) -> Dict[str, Any]:
         """Get basic telemetry from DroneKit vehicle.
         

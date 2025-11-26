@@ -372,7 +372,12 @@ class DroneClient:
                 await asyncio.sleep(0.1)
     
     async def _tof_reading_loop(self) -> None:
-        """ToF sensor reading loop."""
+        """ToF sensor reading loop.
+        
+        Reads ToF sensors and:
+        1. Updates local telemetry
+        2. Sends distance sensor data to ArduPilot EKF via MAVLink DISTANCE_SENSOR messages
+        """
         logger.info("ToF reading loop started")
         
         if not self.tof_sensors:
@@ -380,6 +385,11 @@ class DroneClient:
             while self.running:
                 await asyncio.sleep(1)
             return
+        
+        # Get ToF config for sensor ranges
+        tof_config = self.config.get_tof_config()
+        reading_rate = tof_config.get('reading_rate', 10)  # Hz
+        reading_interval = 1.0 / reading_rate
         
         while self.running:
             try:
@@ -389,10 +399,40 @@ class DroneClient:
                 # Update telemetry with ToF readings
                 self.telemetry.update_from_tof(tof_data)
                 
-                await asyncio.sleep(0.1)  # 10 Hz reading rate
+                # Send ToF sensor data to ArduPilot EKF via MAVLink DISTANCE_SENSOR messages
+                if self.drone_controller and self.drone_controller.is_connected():
+                    # Send bottom (downward) ToF sensor data (for altitude estimation)
+                    if tof_data.get('down', {}).get('valid', False):
+                        bottom_distance = tof_data['down'].get('distance')
+                        if bottom_distance is not None:
+                            # Send to ArduPilot EKF as rangefinder (sensor ID 0, downward orientation)
+                            self.drone_controller.send_distance_sensor(
+                                distance_m=bottom_distance,
+                                sensor_id=0,  # Bottom sensor ID
+                                orientation=25,  # MAV_SENSOR_ORIENTATION_DOWNWARD
+                                min_distance_m=0.04,  # VL53L1X minimum ~4cm
+                                max_distance_m=4.0  # VL53L1X maximum ~4m
+                            )
+                    
+                    # Optionally send forward ToF sensor data (for obstacle avoidance)
+                    # Uncomment if you want to use forward sensor in EKF
+                    # if tof_data.get('forward', {}).get('valid', False):
+                    #     forward_distance = tof_data['forward'].get('distance')
+                    #     if forward_distance is not None:
+                    #         self.drone_controller.send_distance_sensor(
+                    #             distance_m=forward_distance,
+                    #             sensor_id=1,  # Forward sensor ID
+                    #             orientation=0,  # MAV_SENSOR_ORIENTATION_FORWARD
+                    #             min_distance_m=0.30,  # Forward sensor minimum
+                    #             max_distance_m=4.0
+                    #         )
+                
+                await asyncio.sleep(reading_interval)
                 
             except Exception as e:
                 logger.error(f"Error in ToF reading loop: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
                 await asyncio.sleep(0.1)
     
     async def _vision_loop(self) -> None:
