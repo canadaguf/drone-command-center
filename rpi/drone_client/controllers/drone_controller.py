@@ -689,10 +689,14 @@ class DroneController:
             type_mask = 0b0000111111000111  # Ignore position, acceleration, force, yaw; use velocity and yaw_rate
             
             # Send velocity command via MAVLink SET_POSITION_TARGET_LOCAL_NED
+            # Get target system and component from vehicle's master connection
+            target_system = self.vehicle._master.target_system if hasattr(self.vehicle, '_master') else 1
+            target_component = self.vehicle._master.target_component if hasattr(self.vehicle, '_master') else 1
+            
             msg = self.vehicle.message_factory.set_position_target_local_ned_encode(
                 0,  # time_boot_ms (not used)
-                self.vehicle.target_system,
-                self.vehicle.target_component,
+                target_system,
+                target_component,
                 8,  # frame (MAV_FRAME_LOCAL_NED)
                 type_mask,
                 0, 0, 0,  # x, y, z (ignored - position)
@@ -716,13 +720,17 @@ class DroneController:
             yaw_rate: Yaw rate in rad/s
         """
         try:
+            # Get target system and component from vehicle's master connection
+            target_system = self.vehicle._master.target_system if hasattr(self.vehicle, '_master') else 1
+            target_component = self.vehicle._master.target_component if hasattr(self.vehicle, '_master') else 1
+            
             # Use MAVLink message for yaw rate
             # MAV_CMD_DO_SET_ROI_LOCATION or use velocity_yaw_rate in velocity_ned
             # For ArduPilot, we can use SET_POSITION_TARGET_LOCAL_NED with velocity_yaw_rate
             msg = self.vehicle.message_factory.set_position_target_local_ned_encode(
                 0,  # time_boot_ms
-                self.vehicle.target_system,
-                self.vehicle.target_component,
+                target_system,
+                target_component,
                 8,  # frame (MAV_FRAME_LOCAL_NED)
                 0b0000111111000111,  # type_mask (ignore position, use velocity + yaw rate)
                 0, 0, 0,  # x, y, z (ignored)
