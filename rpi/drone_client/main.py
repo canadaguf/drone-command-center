@@ -257,6 +257,10 @@ class DroneClient:
         if self.tof_sensors:
             tasks.append(self._tof_reading_loop())
         
+        # Add hover maintenance loop (maintains altitude when armed but not tracking)
+        if self.drone_controller:
+            tasks.append(self._hover_maintenance_loop())
+        
         # Add vision loop if components are available
         if self.yolo_detector and self.object_tracker:
             tasks.append(self._vision_loop())
@@ -479,6 +483,80 @@ class DroneClient:
                 import traceback
                 logger.debug(traceback.format_exc())
                 await asyncio.sleep(0.1)
+    
+    async def _hover_maintenance_loop(self) -> None:
+        """Hover maintenance loop - maintains altitude and position when armed but not tracking.
+        
+        This loop runs continuously and sends zero velocity commands to maintain hover
+        when the drone is armed but not actively tracking an object. It uses ToF sensor
+        feedback to maintain altitude.
+        """
+        logger.info("Hover maintenance loop started")
+        
+        last_hover_command_time = 0
+        hover_command_interval = 0.2  # Send hover commands every 200ms (5 Hz)
+        
+        while self.running:
+            try:
+                # Only maintain hover if drone is armed and connected
+                if not self.drone_controller or not self.drone_controller.is_connected():
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                if not self.drone_controller.is_armed():
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                # Don't send hover commands if actively tracking (tracking loop handles it)
+                if self.tracking_controller and self.tracking_controller.is_tracking():
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                # Ensure ALT_HOLD mode for hover
+                if self.drone_controller.get_mode() != 'ALT_HOLD':
+                    if not self.drone_controller.set_mode('ALT_HOLD'):
+                        logger.warning("Failed to set ALT_HOLD mode for hover")
+                        await asyncio.sleep(0.5)
+                        continue
+                
+                # Send hover commands periodically
+                current_time = time.time()
+                if current_time - last_hover_command_time >= hover_command_interval:
+                    # Get current altitude from ToF sensor
+                    height_agl = None
+                    if self.tof_sensors and self.telemetry:
+                        height_agl = self.telemetry.get_height_agl()
+                    
+                    # If we have altitude data, use it for altitude maintenance
+                    if height_agl is not None:
+                        # Get target altitude from config
+                        tracking_config = self.config.get_tracking_config()
+                        target_altitude = tracking_config.get('altitude', {}).get('target_altitude', 1.5)
+                        
+                        # Calculate altitude error
+                        altitude_error = target_altitude - height_agl
+                        
+                        # Small vertical velocity correction if altitude drifts (max 0.1 m/s)
+                        if abs(altitude_error) > 0.05:  # 5cm tolerance
+                            vz_correction = max(-0.1, min(0.1, altitude_error * 0.2))  # Slow correction
+                        else:
+                            vz_correction = 0.0
+                        
+                        # Send velocity command with altitude correction
+                        self.drone_controller.send_velocity_command(0.0, 0.0, vz_correction, 0.0)
+                    else:
+                        # No altitude data - just send zero velocity to maintain current state
+                        self.drone_controller.send_velocity_command(0.0, 0.0, 0.0, 0.0)
+                    
+                    last_hover_command_time = current_time
+                
+                await asyncio.sleep(0.1)  # Check every 100ms
+                
+            except Exception as e:
+                logger.error(f"Error in hover maintenance loop: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                await asyncio.sleep(0.5)
     
     async def shutdown(self) -> None:
         """Shutdown drone client."""
