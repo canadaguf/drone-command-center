@@ -45,12 +45,15 @@ ALTITUDE_TOLERANCE = 0.05
 THROTTLE_IDLE = 1100
 THROTTLE_MAX = 1900
 HOVER_THROTTLE = 1500
+THROTTLE_STEP_UP = 6
+THROTTLE_STEP_DOWN = 6
 
 MULTIPLEXER_ADDRESS = 0x70
 VL53L1X_ADDRESS = 0x29
 BOTTOM_SENSOR_CHANNEL = 1
 MAX_I2C_RETRIES = 5
 BASE_RETRY_DELAY = 0.02
+HEIGHT_LOG_INTERVAL = 1.0
 
 KP_ASCEND = 15.0
 KI_ASCEND = 2.0
@@ -60,6 +63,7 @@ KI_HOLD = 1.0
 KD_HOLD = 3.0
 
 logger = logging.getLogger("liftoff_stabilize")
+LAST_HEIGHT_LOG = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +87,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kp", type=float, default=KP_ASCEND, help="PID proportional gain for climb/hold")
     parser.add_argument("--ki", type=float, default=KI_ASCEND, help="PID integral gain for climb/hold")
     parser.add_argument("--kd", type=float, default=KD_ASCEND, help="PID derivative gain for climb/hold")
+    parser.add_argument("--throttle-step-up", type=int, default=THROTTLE_STEP_UP, help="PWM increment when below target altitude")
+    parser.add_argument("--throttle-step-down", type=int, default=THROTTLE_STEP_DOWN, help="PWM decrement when above target altitude")
     parser.add_argument("--dry-run", action="store_true", help="Skip DroneKit commands, only log the flow")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     return parser.parse_args()
@@ -167,10 +173,19 @@ def read_tof_distance(sensor_bundle: Dict[str, object]) -> Optional[float]:
         distance_m = distance_cm / 100.0
         if distance_m < 0.0 or distance_m > 4.0:
             return None
+        log_height(distance_m)
         return distance_m
     except Exception as exc:
         logger.debug("ToF read error: %s", exc)
         return None
+
+
+def log_height(distance: float) -> None:
+    global LAST_HEIGHT_LOG
+    now = time.time()
+    if now - LAST_HEIGHT_LOG >= HEIGHT_LOG_INTERVAL:
+        logger.info("Current height: %.3fm", distance)
+        LAST_HEIGHT_LOG = now
 
 
 def shutdown_tof(sensor_bundle: Optional[Dict[str, object]]) -> None:
@@ -283,6 +298,8 @@ def altitude_pid_loop(
     dt = 0.2
     start = time.time()
     hold_start = None
+    step_up = gains.get("step_up", THROTTLE_STEP_UP)
+    step_down = gains.get("step_down", THROTTLE_STEP_DOWN)
 
     while time.time() - start < timeout:
         distance = read_tof_distance(tof_bundle)
@@ -298,7 +315,12 @@ def altitude_pid_loop(
         last_error = error
 
         adjustment = (gains["kp"] * error + gains["ki"] * integral + gains["kd"] * derivative) * 0.1
-        throttle_pwm += int(adjustment)
+        if distance < target_alt - tolerance:
+            throttle_pwm = min(gains["max_pwm"], throttle_pwm + step_up)
+        elif distance > target_alt + tolerance:
+            throttle_pwm = max(gains["min_pwm"], throttle_pwm - step_down)
+        else:
+            throttle_pwm += int(adjustment)
         throttle_pwm = max(gains["min_pwm"], min(gains["max_pwm"], throttle_pwm))
         apply_throttle_override(vehicle, throttle_pwm, dry_run)
 
@@ -436,6 +458,8 @@ def run_sequence(args: argparse.Namespace) -> int:
             "kd": args.kd,
             "min_pwm": args.idle_throttle,
             "max_pwm": args.max_throttle,
+            "step_up": args.throttle_step_up,
+            "step_down": args.throttle_step_down,
         }
         throttle = altitude_pid_loop(
             vehicle,
@@ -453,6 +477,8 @@ def run_sequence(args: argparse.Namespace) -> int:
             "kd": KD_HOLD,
             "min_pwm": args.idle_throttle,
             "max_pwm": args.max_throttle,
+            "step_up": args.throttle_step_up,
+            "step_down": args.throttle_step_down,
         }
         throttle = altitude_pid_loop(
             vehicle,
