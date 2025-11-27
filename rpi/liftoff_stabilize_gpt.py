@@ -11,6 +11,10 @@ Sequence:
 
 Run with --dry-run to exercise the control loop without actually connecting to the vehicle.
 """
+import collections
+import collections.abc
+if not hasattr(collections, 'MutableMapping'):
+    collections.MutableMapping = collections.abc.MutableMapping
 
 import argparse
 import errno

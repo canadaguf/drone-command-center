@@ -4,6 +4,10 @@ Standalone liftoff test script using STABILIZE mode (indoors with ToF sensor onl
 Implements autonomous flight sequence: arm → takeoff → ascend to 1m → hold 60s → descend → land → disarm.
 Uses RC override for all altitude control since STABILIZE mode doesn't support GPS or velocity commands.
 """
+import collections
+import collections.abc
+if not hasattr(collections, 'MutableMapping'):
+    collections.MutableMapping = collections.abc.MutableMapping
 
 import time
 import logging

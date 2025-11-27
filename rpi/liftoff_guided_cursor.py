@@ -3,6 +3,10 @@
 Standalone liftoff test script using GUIDED mode (outdoors with GPS + ToF sensor).
 Implements autonomous flight sequence: arm → takeoff → ascend to 1m → hold 60s → descend → land → disarm.
 """
+import collections
+import collections.abc
+if not hasattr(collections, 'MutableMapping'):
+    collections.MutableMapping = collections.abc.MutableMapping
 
 import time
 import logging
