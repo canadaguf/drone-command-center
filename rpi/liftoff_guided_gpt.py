@@ -12,6 +12,10 @@ Sequence:
 Dry-run mode (`--dry-run`) skips DroneKit commands but still exercises the ToF logic/logging so
 the script can be bench tested indoors without the aircraft powered.
 """
+import collections
+import collections.abc
+if not hasattr(collections, 'MutableMapping'):
+    collections.MutableMapping = collections.abc.MutableMapping
 
 import argparse
 import errno
@@ -50,8 +54,10 @@ BOTTOM_SENSOR_CHANNEL = 1
 
 MAX_I2C_RETRIES = 5
 BASE_RETRY_DELAY = 0.02
+HEIGHT_LOG_INTERVAL = 1.0
 
 logger = logging.getLogger("liftoff_guided")
+LAST_HEIGHT_LOG = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +165,7 @@ def read_tof_distance(sensor_bundle: Dict[str, object]) -> Optional[float]:
         distance_m = distance_cm / 100.0
         if distance_m < 0.0 or distance_m > 4.0:
             return None
+        log_height(distance_m)
         return distance_m
     except Exception as exc:
         logger.debug("ToF read error: %s", exc)
@@ -184,6 +191,14 @@ def shutdown_tof(sensor_bundle: Optional[Dict[str, object]]) -> None:
                 smbus.close()
             except Exception:
                 pass
+
+
+def log_height(distance: float) -> None:
+    global LAST_HEIGHT_LOG
+    now = time.time()
+    if now - LAST_HEIGHT_LOG >= HEIGHT_LOG_INTERVAL:
+        logger.info("Current height: %.3fm", distance)
+        LAST_HEIGHT_LOG = now
 
 
 # ---------------------------------------------------------------------------
