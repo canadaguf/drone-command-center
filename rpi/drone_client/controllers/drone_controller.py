@@ -322,9 +322,18 @@ class DroneController:
             
             # Phase 1: Incremental throttle rise until liftoff (slow and controlled)
             logger.info("Phase 1: Slow throttle increase until liftoff...")
+            logger.info(f"Starting throttle: {current_throttle}, increment: {throttle_increment} per {increment_interval}s")
+            last_rc_send_time = 0
+            rc_send_interval = 0.1  # Send RC override every 100ms to maintain control
+            
             while not liftoff_detected and (time.time() - start_time) < max_timeout:
-                # Set throttle
-                self.send_rc_override(1500, 1500, 1500, current_throttle)
+                current_time = time.time()
+                
+                # Send RC override frequently to maintain control (ArduPilot requires frequent updates)
+                if (current_time - last_rc_send_time) >= rc_send_interval:
+                    if not self.send_rc_override(1500, 1500, 1500, current_throttle):
+                        logger.warning(f"Failed to send RC override at throttle {current_throttle}")
+                    last_rc_send_time = current_time
                 
                 # Wait a bit for throttle to take effect
                 time.sleep(increment_interval * 0.5)
