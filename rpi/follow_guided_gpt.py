@@ -68,7 +68,7 @@ MAX_I2C_RETRIES = 5
 BASE_RETRY_DELAY = 0.02
 HEIGHT_LOG_INTERVAL = 1.0
 
-DEFAULT_MODEL_PATH = "yolo11s_person.onnx"
+DEFAULT_MODEL_PATH = "/home/ilya/models/yolo11n.onnx"
 DEFAULT_TARGET_CLASS = "chair"
 COCO_CLASS_IDS = {
     "person": 0,

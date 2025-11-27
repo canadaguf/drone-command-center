@@ -4,7 +4,7 @@ Autonomous STABILIZE-mode follow script.
 
 This script mirrors the standalone liftoff logic (arming, throttle ramp, ToF-based altitude hold),
 then activates a vision pipeline (Picamera2 + YOLO + simple box tracking) to follow a single object class.
-While following, it keeps altitude between 0.5–1.5 m using the bottom ToF sensor, estimates forward distance
+While following, it keeps altitude between 0.5-1.5 m using the bottom ToF sensor, estimates forward distance
 mostly from bounding boxes, and blends in the forward ToF sensor whenever the target is centered.
 If the target is lost and not reacquired within the timeout, the drone descends and lands using the same
 incremental throttle logic validated in the liftoff tests.
@@ -64,7 +64,7 @@ MAX_I2C_RETRIES = 5
 BASE_RETRY_DELAY = 0.02
 HEIGHT_LOG_INTERVAL = 1.0
 
-DEFAULT_MODEL_PATH = "yolo11s_person.onnx"
+DEFAULT_MODEL_PATH = "/home/ilya/models/yolo11n.onnx"
 DEFAULT_TARGET_CLASS = "chair"
 COCO_CLASS_IDS = {"person": 0, "chair": 56, "bench": 14}
 DESIRED_DISTANCE = 3.0
