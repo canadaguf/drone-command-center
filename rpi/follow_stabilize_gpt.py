@@ -15,6 +15,7 @@ import collections
 import collections.abc
 import errno
 import logging
+import math
 import signal
 import sys
 import time
@@ -87,6 +88,21 @@ LAST_HEIGHT_LOG = 0.0
 
 def clamp(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(max_value, value))
+
+
+def sanitize_float(value: Optional[float], default: float) -> float:
+    if value is None or not math.isfinite(value):
+        return default
+    return value
+
+
+def safe_int(value: Optional[float], default: int) -> int:
+    if value is None or not math.isfinite(value):
+        return default
+    try:
+        return int(value)
+    except (OverflowError, ValueError):
+        return default
 
 
 # ---------------------------------------------------------------------------
@@ -390,11 +406,15 @@ def arm_vehicle(vehicle, timeout: float = 10.0) -> bool:
 
 
 def apply_manual_override(vehicle, roll: int, pitch: int, throttle: int, yaw: int) -> None:
+    roll = sanitize_float(roll, 1500)
+    pitch = sanitize_float(pitch, 1500)
+    throttle = sanitize_float(throttle, THROTTLE_IDLE)
+    yaw = sanitize_float(yaw, 1500)
     vehicle.channels.overrides = {
-        "1": clamp(roll, 1100, 1900),
-        "2": clamp(pitch, 1100, 1900),
-        "3": clamp(throttle, 1100, 1900),
-        "4": clamp(yaw, 1100, 1900),
+        "1": safe_int(clamp(roll, 1100, 1900), 1500),
+        "2": safe_int(clamp(pitch, 1100, 1900), 1500),
+        "3": safe_int(clamp(throttle, 1100, 1900), THROTTLE_IDLE),
+        "4": safe_int(clamp(yaw, 1100, 1900), 1500),
     }
 
 
@@ -566,10 +586,13 @@ def blend_distance(bbox_distance: float, tof_distance: Optional[float], error_x:
 def send_stabilize_command(vehicle, command: ControlCommand, throttle_pwm: int) -> None:
     pitch_scale = 250
     yaw_scale = 250
-    pitch_pwm = int(1500 - command.vx * pitch_scale)
-    yaw_pwm = int(1500 + command.yaw_rate * yaw_scale)
-    throttle = clamp(throttle_pwm + int(command.vz * 50), THROTTLE_IDLE, THROTTLE_MAX)
-    apply_manual_override(vehicle, roll=1500, pitch=pitch_pwm, throttle=throttle, yaw=yaw_pwm)
+    vx = sanitize_float(command.vx, 0.0)
+    vz = sanitize_float(command.vz, 0.0)
+    yaw_rate = sanitize_float(command.yaw_rate, 0.0)
+    pitch_pwm = safe_int(1500 - vx * pitch_scale, 1500)
+    yaw_pwm = safe_int(1500 + yaw_rate * yaw_scale, 1500)
+    throttle = clamp(throttle_pwm + vz * 50, THROTTLE_IDLE, THROTTLE_MAX)
+    apply_manual_override(vehicle, roll=1500, pitch=pitch_pwm, throttle=safe_int(throttle, THROTTLE_IDLE), yaw=yaw_pwm)
 
 
 def follow_target_loop(
@@ -631,13 +654,15 @@ def follow_target_loop(
         error_x = abs(cx - w / 2) / w
         error_y = abs(cy - h / 2) / h
         distance = clamp(blend_distance(bbox_distance, front_distance, error_x, error_y), DISTANCE_MIN, DISTANCE_MAX)
+        distance = sanitize_float(distance, DESIRED_DISTANCE)
         altitude = bottom_distance if bottom_distance is not None else TARGET_ALTITUDE
-        altitude = clamp(altitude, MIN_ALTITUDE, MAX_ALTITUDE)
+        altitude = clamp(sanitize_float(altitude, TARGET_ALTITUDE), MIN_ALTITUDE, MAX_ALTITUDE)
 
         command = compute_follow_command(target_bbox, frame.shape[:2], DESIRED_DISTANCE, distance, altitude, TARGET_ALTITUDE)
         # Update throttle towards maintaining altitude
-        altitude_error = TARGET_ALTITUDE - altitude
-        throttle_pwm += int(altitude_error * 20)
+        altitude_error = sanitize_float(TARGET_ALTITUDE - altitude, 0.0)
+        if math.isfinite(altitude_error):
+            throttle_pwm += safe_int(altitude_error * 20, 0)
         throttle_pwm = clamp(throttle_pwm, THROTTLE_IDLE, THROTTLE_MAX)
 
         send_stabilize_command(vehicle, command, throttle_pwm)
@@ -678,6 +703,7 @@ def run_sequence(args: argparse.Namespace) -> int:
     front_sensor = ToFSensor(FRONT_SENSOR_CHANNEL)
     camera = CameraManager(FRAME_WIDTH, FRAME_HEIGHT, FRAME_RATE)
     vehicle = None
+    last_throttle = THROTTLE_IDLE
 
     def handle_sigint(signum, frame):  # pragma: no cover
         raise KeyboardInterrupt()
@@ -744,23 +770,34 @@ def run_sequence(args: argparse.Namespace) -> int:
         throttle = altitude_pid_loop(
             vehicle, bottom_sensor, args.target_alt, ALTITUDE_TOLERANCE, gains, throttle, duration=args.hold_seconds, timeout=args.hold_seconds + 10
         )
+        last_throttle = throttle
 
-        follow_success = follow_target_loop(
-            vehicle=vehicle,
-            camera=camera,
-            detector=detector,
-            front_sensor=front_sensor,
-            bottom_sensor=bottom_sensor,
-            hover_throttle=throttle,
-            follow_seconds=args.follow_seconds,
-            loss_timeout=args.loss_timeout,
-        )
-        if not follow_success:
-            logger.warning("Follow aborted due to target loss")
+        follow_exception = None
+        try:
+            follow_success = follow_target_loop(
+                vehicle=vehicle,
+                camera=camera,
+                detector=detector,
+                front_sensor=front_sensor,
+                bottom_sensor=bottom_sensor,
+                hover_throttle=throttle,
+                follow_seconds=args.follow_seconds,
+                loss_timeout=args.loss_timeout,
+            )
+            if not follow_success:
+                logger.warning("Follow aborted due to target loss")
+        except Exception as exc:
+            follow_exception = exc
+            logger.error("Follow loop failed: %s", exc)
+            import traceback
+
+            logger.debug(traceback.format_exc())
 
         descend_to_ground(vehicle, bottom_sensor, throttle)
         final_touchdown(vehicle, bottom_sensor)
         disarm_vehicle(vehicle)
+        if follow_exception:
+            return 1
         logger.info("Follow sequence completed")
         return 0
     except KeyboardInterrupt:
@@ -771,6 +808,13 @@ def run_sequence(args: argparse.Namespace) -> int:
         import traceback
 
         logger.debug(traceback.format_exc())
+        if vehicle is not None and getattr(vehicle, "armed", False):
+            try:
+                descend_to_ground(vehicle, bottom_sensor, last_throttle)
+                final_touchdown(vehicle, bottom_sensor)
+                disarm_vehicle(vehicle)
+            except Exception as land_exc:
+                logger.error("Emergency landing failed: %s", land_exc)
         return 1
     finally:
         if vehicle is not None:
