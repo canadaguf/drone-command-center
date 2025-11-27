@@ -636,8 +636,10 @@ def follow_target_loop(
 
         if selected_detection is None:
             if target_bbox and (time.time() - last_seen) > loss_timeout:
-                logger.warning("Target lost > %.1fs, aborting follow", loss_timeout)
-                return False
+                logger.warning("Target lost > %.1fs, re-centering altitude and searching for new target", loss_timeout)
+                target_bbox = None
+                last_seen = 0.0
+            throttle_pwm = adjust_hover_throttle(throttle_pwm, bottom_sensor, TARGET_ALTITUDE)
             apply_manual_override(vehicle, 1500, 1500, throttle_pwm, 1500)
             time.sleep(0.2)
             continue
@@ -670,6 +672,16 @@ def follow_target_loop(
 
     logger.info("Follow duration complete")
     return True
+
+
+def adjust_hover_throttle(throttle_pwm: int, bottom_sensor: ToFSensor, target_altitude: float) -> int:
+    distance = bottom_sensor.get_distance()
+    if distance is None:
+        return throttle_pwm
+    distance = sanitize_float(distance, target_altitude)
+    altitude_error = clamp(target_altitude - distance, -0.6, 0.6)
+    throttle_pwm += safe_int(altitude_error * 20, 0)
+    return clamp(throttle_pwm, THROTTLE_IDLE, THROTTLE_MAX)
 
 
 # ---------------------------------------------------------------------------
