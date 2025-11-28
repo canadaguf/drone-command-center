@@ -47,6 +47,9 @@ THROTTLE_MAX = 1900
 HOVER_THROTTLE = 1500
 THROTTLE_STEP_UP = 6
 THROTTLE_STEP_DOWN = 6
+MAX_CLIMB_PWM = 1650
+TOF_STALE_TIMEOUT = 0.6
+MAX_HOVER_DELTA = 250
 
 MULTIPLEXER_ADDRESS = 0x70
 VL53L1X_ADDRESS = 0x29
@@ -64,6 +67,13 @@ KD_HOLD = 3.0
 
 logger = logging.getLogger("liftoff_stabilize")
 LAST_HEIGHT_LOG = 0.0
+
+
+class AltitudeControlError(RuntimeError):
+    """Raised when the altitude controller decides it is unsafe to continue."""
+
+    pass
+
 
 
 # ---------------------------------------------------------------------------
@@ -84,11 +94,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--idle-throttle", type=int, default=THROTTLE_IDLE, help="Initial throttle PWM for ramp sequence")
     parser.add_argument("--hover-throttle", type=int, default=HOVER_THROTTLE, help="Throttle guess for hovering")
     parser.add_argument("--max-throttle", type=int, default=THROTTLE_MAX, help="Upper PWM bound")
+    parser.add_argument(
+        "--max-climb-pwm",
+        type=int,
+        default=MAX_CLIMB_PWM,
+        help="Upper PWM bound during the climb phase",
+    )
     parser.add_argument("--kp", type=float, default=KP_ASCEND, help="PID proportional gain for climb/hold")
     parser.add_argument("--ki", type=float, default=KI_ASCEND, help="PID integral gain for climb/hold")
     parser.add_argument("--kd", type=float, default=KD_ASCEND, help="PID derivative gain for climb/hold")
     parser.add_argument("--throttle-step-up", type=int, default=THROTTLE_STEP_UP, help="PWM increment when below target altitude")
     parser.add_argument("--throttle-step-down", type=int, default=THROTTLE_STEP_DOWN, help="PWM decrement when above target altitude")
+    parser.add_argument(
+        "--tof-stale-timeout",
+        type=float,
+        default=TOF_STALE_TIMEOUT,
+        help="Abort climb if no ToF readings arrive within this window (seconds)",
+    )
+    parser.add_argument(
+        "--max-hover-delta",
+        type=int,
+        default=MAX_HOVER_DELTA,
+        help="Abort climb if throttle exceeds hover guess by this delta without reaching altitude",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Skip DroneKit commands, only log the flow")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     return parser.parse_args()
@@ -267,7 +295,9 @@ def ramp_until_takeoff(vehicle, tof_bundle, args, dry_run: bool) -> Optional[int
     logger.info("Ramping throttle until ToF exceeds %.2fm", args.takeoff_threshold)
     throttle = args.idle_throttle
     last_log = time.time()
-    while throttle <= args.max_throttle:
+    ceiling = min(args.max_climb_pwm, args.max_throttle)
+    ceiling = max(ceiling, args.idle_throttle)
+    while throttle <= ceiling:
         apply_throttle_override(vehicle, throttle, dry_run)
         time.sleep(0.2)
         distance = read_tof_distance(tof_bundle)
@@ -278,7 +308,7 @@ def ramp_until_takeoff(vehicle, tof_bundle, args, dry_run: bool) -> Optional[int
         if time.time() - last_log > 1.0:
             logger.debug("Throttle %s ToF=%s", throttle, f"{distance:.3f}" if distance else "None")
             last_log = time.time()
-    logger.error("Max throttle reached without liftoff")
+    logger.error("Climb PWM ceiling %s reached without liftoff", ceiling)
     return None
 
 
@@ -292,6 +322,9 @@ def altitude_pid_loop(
     dry_run: bool,
     duration: Optional[float] = None,
     timeout: float = 30.0,
+    hover_pwm: Optional[int] = None,
+    max_hover_delta: Optional[int] = None,
+    tof_stale_timeout: float = TOF_STALE_TIMEOUT,
 ) -> int:
     integral = 0.0
     last_error = 0.0
@@ -300,13 +333,37 @@ def altitude_pid_loop(
     hold_start = None
     step_up = gains.get("step_up", THROTTLE_STEP_UP)
     step_down = gains.get("step_down", THROTTLE_STEP_DOWN)
+    last_valid_sample = None
 
     while time.time() - start < timeout:
         distance = read_tof_distance(tof_bundle)
+        now = time.time()
         if distance is None:
+            if last_valid_sample is not None and now - last_valid_sample >= tof_stale_timeout:
+                logger.error("ToF data unavailable for %.2fs; aborting altitude control", now - last_valid_sample)
+                throttle_pwm = gains["min_pwm"]
+                apply_throttle_override(vehicle, throttle_pwm, dry_run)
+                raise AltitudeControlError("ToF data stale")
+            throttle_pwm = max(gains["min_pwm"], throttle_pwm - step_down)
             apply_throttle_override(vehicle, throttle_pwm, dry_run)
             time.sleep(dt)
             continue
+
+        last_valid_sample = now
+
+        if hover_pwm is not None and max_hover_delta is not None:
+            if throttle_pwm >= hover_pwm + max_hover_delta and distance < target_alt - tolerance:
+                logger.error(
+                    "Throttle %s exceeded hover guess (%s + %s) while altitude %.3fm < target %.3fm",
+                    throttle_pwm,
+                    hover_pwm,
+                    max_hover_delta,
+                    distance,
+                    target_alt,
+                )
+                throttle_pwm = max(gains["min_pwm"], hover_pwm)
+                apply_throttle_override(vehicle, throttle_pwm, dry_run)
+                raise AltitudeControlError("Hover delta exceeded without climb")
 
         error = target_alt - distance
         integral += error * dt
@@ -423,6 +480,7 @@ def disarm_vehicle(vehicle, dry_run: bool) -> None:
 def run_sequence(args: argparse.Namespace) -> int:
     tof_bundle = None
     vehicle = None
+    args.max_climb_pwm = min(args.max_climb_pwm, args.max_throttle)
 
     def handle_sigint(signum, frame):
         raise KeyboardInterrupt()
@@ -457,20 +515,10 @@ def run_sequence(args: argparse.Namespace) -> int:
             "ki": args.ki,
             "kd": args.kd,
             "min_pwm": args.idle_throttle,
-            "max_pwm": args.max_throttle,
+            "max_pwm": args.max_climb_pwm,
             "step_up": args.throttle_step_up,
             "step_down": args.throttle_step_down,
         }
-        throttle = altitude_pid_loop(
-            vehicle,
-            tof_bundle,
-            args.target_alt,
-            ALTITUDE_TOLERANCE,
-            gains_ascent,
-            throttle,
-            args.dry_run,
-        )
-
         gains_hold = {
             "kp": KP_HOLD,
             "ki": KI_HOLD,
@@ -480,17 +528,41 @@ def run_sequence(args: argparse.Namespace) -> int:
             "step_up": args.throttle_step_up,
             "step_down": args.throttle_step_down,
         }
-        throttle = altitude_pid_loop(
-            vehicle,
-            tof_bundle,
-            args.target_alt,
-            ALTITUDE_TOLERANCE,
-            gains_hold,
-            throttle,
-            args.dry_run,
-            duration=args.hold_seconds,
-            timeout=args.hold_seconds + 10,
-        )
+        try:
+            throttle = altitude_pid_loop(
+                vehicle,
+                tof_bundle,
+                args.target_alt,
+                ALTITUDE_TOLERANCE,
+                gains_ascent,
+                throttle,
+                args.dry_run,
+                hover_pwm=args.hover_throttle,
+                max_hover_delta=args.max_hover_delta,
+                tof_stale_timeout=args.tof_stale_timeout,
+            )
+
+            throttle = altitude_pid_loop(
+                vehicle,
+                tof_bundle,
+                args.target_alt,
+                ALTITUDE_TOLERANCE,
+                gains_hold,
+                throttle,
+                args.dry_run,
+                duration=args.hold_seconds,
+                timeout=args.hold_seconds + 10,
+                hover_pwm=args.hover_throttle,
+                max_hover_delta=args.max_hover_delta,
+                tof_stale_timeout=args.tof_stale_timeout,
+            )
+        except AltitudeControlError as exc:
+            logger.error("Altitude controller aborted: %s", exc)
+            apply_throttle_override(vehicle, args.idle_throttle, args.dry_run)
+            time.sleep(0.5)
+            clear_rc_override(vehicle, args.dry_run)
+            disarm_vehicle(vehicle, args.dry_run)
+            return 1
 
         throttle = descend_to_ground(vehicle, tof_bundle, args, throttle, args.dry_run)
         land_and_cut(vehicle, tof_bundle, args, throttle, args.dry_run)
