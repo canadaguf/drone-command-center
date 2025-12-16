@@ -15,10 +15,19 @@ import adafruit_vl53l1x
 class ToFReader:
     """Background reader for a single VL53L1X sensor."""
 
-    def __init__(self, bus: int = 1, address: int = 0x29, poll_hz: int = 20):
+    def __init__(
+        self,
+        bus: int = 1,
+        address: int = 0x29,
+        poll_hz: int = 20,
+        multiplexer_address: Optional[int] = None,
+        channel: Optional[int] = None,
+    ):
         self.bus_id = bus
         self.address = address
         self.poll_hz = max(1, poll_hz)
+        self.multiplexer_address = multiplexer_address
+        self.channel = channel
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -50,6 +59,8 @@ class ToFReader:
         try:
             self._smbus = SMBus(self.bus_id)
             self._i2c = busio.I2C(board.SCL, board.SDA, frequency=100000)
+            if self.channel is not None and self.multiplexer_address is not None:
+                self._select_channel(self.channel)
             self._sensor = adafruit_vl53l1x.VL53L1X(self._i2c, address=self.address)
             self._sensor.start_ranging()
         except Exception:
@@ -68,10 +79,22 @@ class ToFReader:
 
         self._cleanup()
 
+    def _select_channel(self, channel: int) -> None:
+        if self.multiplexer_address is None or self._smbus is None:
+            return
+        try:
+            channel_mask = 1 << channel
+            self._smbus.write_byte(self.multiplexer_address, channel_mask)
+            time.sleep(0.01)
+        except Exception:
+            pass
+
     def _read_once(self) -> Optional[float]:
         if not self._sensor:
             return None
         try:
+            if self.channel is not None:
+                self._select_channel(self.channel)
             if not self._sensor.data_ready:
                 return None
             dist_mm = self._sensor.distance

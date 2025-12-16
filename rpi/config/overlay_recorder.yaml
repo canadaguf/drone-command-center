@@ -3,6 +3,12 @@ camera:
   height: 720
   fps: 30
   rotation: 0  # 0|90|180|270, rotates overlay accordingly
+  awb_enable: true
+  awb_mode: "auto"
+  brightness: 0.0
+  contrast: 1.0
+  saturation: 1.0
+  sharpness: 1.0
 
 yolo:
   model_path: "/home/ilya/models/yolo11n.onnx"
@@ -21,9 +27,16 @@ output:
 tof:
   enabled: true
   bus: 1
-  address: 0x70
+  address: 0x29
   poll_hz: 20
-  label: "ToF (m)"
+  multiplexer_address: 0x70
+  sensors:
+    front:
+      channel: 1
+    bottom:
+      channel: 0
+  front_label: "Front ToF (m)"
+  bottom_label: "Bottom ToF (m)"
 
 sbus:
   enabled: true

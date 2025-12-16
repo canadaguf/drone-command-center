@@ -208,11 +208,19 @@ def run_ort_inference(
     return parse_onnx_detections(outputs[0], frame_rgb.shape[:2], conf, iou, max_det, class_names)
 
 
-def open_picam(width: int, height: int, fps: int) -> Picamera2:
+def open_picam(width: int, height: int, fps: int, cam_controls: Dict[str, Any]) -> Picamera2:
     picam2 = Picamera2()
     cfg = picam2.create_preview_configuration(
         main={"size": (width, height), "format": "RGB888"},
-        controls={"FrameRate": fps},
+        controls={
+            "FrameRate": fps,
+            "AwbEnable": cam_controls.get("awb_enable", True),
+            "AwbMode": cam_controls.get("awb_mode", "auto"),
+            "Brightness": cam_controls.get("brightness", 0.0),
+            "Contrast": cam_controls.get("contrast", 1.0),
+            "Saturation": cam_controls.get("saturation", 1.0),
+            "Sharpness": cam_controls.get("sharpness", 1.0),
+        },
     )
     picam2.configure(cfg)
     picam2.start()
@@ -228,6 +236,14 @@ def main(cfg_path: Path) -> None:
     height = int(camera_cfg.get("height", 720))
     fps = int(camera_cfg.get("fps", 30))
     rotation = int(camera_cfg.get("rotation", 0))
+    cam_controls = {
+        "awb_enable": camera_cfg.get("awb_enable", True),
+        "awb_mode": camera_cfg.get("awb_mode", "auto"),
+        "brightness": camera_cfg.get("brightness", 0.0),
+        "contrast": camera_cfg.get("contrast", 1.0),
+        "saturation": camera_cfg.get("saturation", 1.0),
+        "sharpness": camera_cfg.get("sharpness", 1.0),
+    }
 
     yolo_cfg = cfg.get("yolo", {})
     input_size = int(yolo_cfg.get("input_size", 640))
@@ -235,11 +251,26 @@ def main(cfg_path: Path) -> None:
     session, input_name = create_ort_session(yolo_cfg.get("model_path", "yolo11n.onnx"))
 
     tof_cfg = cfg.get("tof", {})
-    tof_reader = ToFReader(
-        bus=tof_cfg.get("bus", 1),
-        address=tof_cfg.get("address", 0x29),
-        poll_hz=tof_cfg.get("poll_hz", 20),
-    ) if tof_cfg.get("enabled", True) else None
+    tof_readers: Dict[str, ToFReader] = {}
+    if tof_cfg.get("enabled", True):
+        sensors_cfg = tof_cfg.get("sensors")
+        if sensors_cfg:
+            for name, scfg in sensors_cfg.items():
+                tof_readers[name] = ToFReader(
+                    bus=tof_cfg.get("bus", 1),
+                    address=tof_cfg.get("address", 0x29),
+                    poll_hz=tof_cfg.get("poll_hz", 20),
+                    multiplexer_address=tof_cfg.get("multiplexer_address"),
+                    channel=scfg.get("channel"),
+                )
+        else:
+            tof_readers["tof"] = ToFReader(
+                bus=tof_cfg.get("bus", 1),
+                address=tof_cfg.get("address", 0x29),
+                poll_hz=tof_cfg.get("poll_hz", 20),
+                multiplexer_address=tof_cfg.get("multiplexer_address"),
+                channel=tof_cfg.get("channel"),
+            )
 
     sbus_cfg = cfg.get("sbus", {})
     sbus_reader = SBUSReader(
@@ -272,7 +303,7 @@ def main(cfg_path: Path) -> None:
     ensure_parent(out_path)
     ensure_parent(log_path)
 
-    picam2 = open_picam(width, height, fps)
+    picam2 = open_picam(width, height, fps, cam_controls)
     writer = cv2.VideoWriter(
         str(out_path),
         fourcc,
@@ -288,8 +319,8 @@ def main(cfg_path: Path) -> None:
 
     signal.signal(signal.SIGINT, handle_sigint)
 
-    if tof_reader:
-        tof_reader.start()
+    for reader in tof_readers.values():
+        reader.start()
     if sbus_reader:
         sbus_reader.start()
 
@@ -299,7 +330,7 @@ def main(cfg_path: Path) -> None:
         log_file = open(log_path, "w", newline="", encoding="utf-8")
         log_writer = csv.writer(log_file)
         log_writer.writerow(
-            ["timestamp", "tof_m", "throttle", "yaw", "pitch", "roll"]
+            ["timestamp", "tof_front_m", "tof_bottom_m", "throttle", "yaw", "pitch", "roll"]
         )
 
     last_time = time.time()
@@ -324,9 +355,19 @@ def main(cfg_path: Path) -> None:
 
         # Build overlay blocks
         tof_lines: List[str] = []
-        if tof_reader:
-            tof_val = tof_reader.latest_distance_m()
-            tof_lines.append(format_value(tof_cfg.get("label", "ToF (m)"), tof_val))
+        front_val = None
+        bottom_val = None
+        if tof_readers:
+            if "front" in tof_readers:
+                front_val = tof_readers["front"].latest_distance_m()
+                tof_lines.append(format_value(tof_cfg.get("front_label", "Front ToF (m)"), front_val))
+            if "bottom" in tof_readers:
+                bottom_val = tof_readers["bottom"].latest_distance_m()
+                tof_lines.append(format_value(tof_cfg.get("bottom_label", "Bottom ToF (m)"), bottom_val))
+            if not tof_lines:
+                # fallback first reader
+                only_val = next(iter(tof_readers.values())).latest_distance_m()
+                tof_lines.append(format_value(tof_cfg.get("label", "ToF (m)"), only_val))
 
         rc_lines: List[str] = []
         if sbus_reader:
@@ -400,7 +441,8 @@ def main(cfg_path: Path) -> None:
             log_writer.writerow(
                 [
                     now,
-                    tof_reader.latest_distance_m() if tof_reader else None,
+                    front_val,
+                    bottom_val,
                     rc.get("throttle"),
                     rc.get("yaw"),
                     rc.get("pitch"),
@@ -420,8 +462,8 @@ def main(cfg_path: Path) -> None:
     picam2.close()
     if display_preview:
         cv2.destroyAllWindows()
-    if tof_reader:
-        tof_reader.stop()
+    for reader in tof_readers.values():
+        reader.stop()
     if sbus_reader:
         sbus_reader.stop()
 
