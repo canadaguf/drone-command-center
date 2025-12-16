@@ -551,9 +551,21 @@ def main():
         # Initialize camera
         logger.info("Initializing camera...")
         camera = Picamera2()
+        
+        # Create camera configuration with proper color settings
+        # Use RGB888 format (standard format for natural colors)
         config = camera.create_preview_configuration(
             main={"size": (args.width, args.height), "format": "RGB888"},
-            controls={"FrameRate": args.fps}
+            controls={
+                "FrameRate": args.fps,
+                # Color controls for natural colors (per Picamera2 documentation)
+                "AwbEnable": True,  # Enable auto white balance
+                "AwbMode": 0,  # Auto white balance mode (0=Auto)
+                "Saturation": 1.0,  # Normal saturation (1.0 = default, range 0.0-32.0)
+                "Contrast": 1.0,  # Normal contrast (1.0 = default)
+                "Brightness": 0.0,  # Default brightness
+                "Sharpness": 1.0  # Normal sharpness (1.0 = default, range 0.0-16.0)
+            }
         )
         camera.configure(config)
         camera.start()
@@ -580,9 +592,10 @@ def main():
         telemetry_reader = TelemetryReader(args.mavlink, args.mavlink_baud)
         telemetry_reader.connect()
         
-        # Initialize video writer
+        # Initialize video writer with proper codec and FPS
+        # Use mp4v codec (widely supported) with explicit FPS
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        video_writer = cv2.VideoWriter(output_path, fourcc, args.fps, (args.width, args.height))
+        video_writer = cv2.VideoWriter(output_path, fourcc, float(args.fps), (args.width, args.height))
         
         if not video_writer.isOpened():
             raise Exception("Failed to open video writer")
@@ -591,13 +604,24 @@ def main():
         
         frame_count = 0
         start_time = time.time()
+        frame_interval = 1.0 / args.fps  # Time between frames in seconds
+        next_frame_time = start_time
         
         while True:
-            # Capture frame
+            # Control frame rate - wait until it's time for next frame
+            current_time = time.time()
+            sleep_time = next_frame_time - current_time
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            
+            # Capture frame (RGB888 format)
             frame = camera.capture_array()
             
-            # Convert RGB to BGR for OpenCV
+            # Convert RGB to BGR for OpenCV (RGB888 is already RGB, no alpha channel)
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            
+            # Update next frame time (use start time + frame_count * interval to prevent drift)
+            next_frame_time = start_time + (frame_count + 1) * frame_interval
             
             # Run YOLO detection
             detections = []
@@ -625,7 +649,7 @@ def main():
             if frame_count % 30 == 0:
                 elapsed = time.time() - start_time
                 fps_actual = frame_count / elapsed
-                logger.info(f"Recorded {frame_count} frames ({fps_actual:.1f} fps)")
+                logger.info(f"Recorded {frame_count} frames ({fps_actual:.1f} fps, target: {args.fps} fps)")
     
     except KeyboardInterrupt:
         logger.info("Stopping recording...")
