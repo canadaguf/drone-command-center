@@ -38,7 +38,7 @@ running = True
 
 def signal_handler(sig, frame):
     global running
-    print("\n🛑 Interrupt received. Landing immediately.")
+    print("\nInterrupt received. Landing immediately.")
     running = False
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -87,33 +87,33 @@ def disarm(master):
 def main():
     global running
 
-    print("🔌 Connecting to flight controller...")
+    print("Connecting to flight controller...")
     master = mavutil.mavlink_connection('/dev/ttyAMA0', baud=256000)
     master.wait_heartbeat(timeout=10)
-    print("✅ Heartbeat received.")
+    print("Heartbeat received.")
 
     # Safety: Ensure we are in STABILIZE mode (MODE 6 for ArduCopter)
     # You can change this if using a different mode that allows manual throttle
-    print("✈️  Setting STABILIZE mode (mode 6)...")
+    print("Setting STABILIZE mode (mode 6)...")
     master.set_mode(6)  # STABILIZE
     time.sleep(1)
 
     # Initialize I2C and TOF
-    print("📡 Initializing I2C and TOF sensor...")
+    print("Initializing I2C and TOF sensor...")
     smbus = SMBus(1)
     i2c = busio.I2C(board.SCL, board.SDA, frequency=100000)
     select_mux_channel(smbus, TOF_CHANNEL)
     time.sleep(0.1)
     tof = adafruit_vl53l1x.VL53L1X(i2c, address=VL53L1X_ADDR)
     tof.start_ranging()
-    print("✅ TOF sensor ready.")
+    print("TOF sensor ready.")
 
     current_throttle = THROTTLE_MIN
     altitude = 0.0
 
     try:
         # Wait for stable ground reading
-        print("📏 Calibrating ground distance...")
+        print("Calibrating ground distance...")
         ground_readings = []
         for _ in range(20):
             d = read_tof_distance(smbus, tof)
@@ -123,17 +123,46 @@ def main():
         if not ground_readings:
             raise RuntimeError("Failed to read TOF sensor")
         ground_alt = sum(ground_readings) / len(ground_readings)
-        print(f"🟢 Ground reference: {ground_alt:.3f} m")
+        print(f"Ground reference: {ground_alt:.3f} m")
 
-        # === ARMING ===
-        print("⚠️  Ensure props are OFF or drone is secured!")
-        print("Arming in 3 seconds...")
-        time.sleep(3)
+               # === ARMING with RC override (simulate yaw-right arm) ===
+        print("Sending RC override for arming (throttle low, yaw right)...")
+        send_rc_throttle(master, 1000)
+        master.mav.rc_channels_override_send(
+            master.target_system,
+            master.target_component,
+            1500,  # Roll
+            1500,  # Pitch
+            1000,  # Throttle (min)
+            2000,  # Yaw (full right — arming gesture)
+            0, 0, 0, 0
+        )
+        time.sleep(0.5)
+
+        print("Sending ARM command...")
         master.arducopter_arm()
-        print("✅ Armed!")
+        time.sleep(1)
+
+        # Verify armed status
+        hb = master.recv_match(type='HEARTBEAT', blocking=True, timeout=2)
+        if hb and hb.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED:
+            print("? Confirmed: DRONE IS ARMED")
+        else:
+            print("WARNING: Drone NOT actually armed! Check FC parameters.")
+            # Optionally exit or continue with caution
+            # sys.exit(1)
+
+        # Return yaw to neutral
+        send_rc_throttle(master, 1000)
+        master.mav.rc_channels_override_send(
+            master.target_system,
+            master.target_component,
+            1500, 1500, 1000, 1500, 0, 0, 0, 0
+        )
+        time.sleep(0.5)
 
         # === Takeoff Phase ===
-        print(f"🛫 Taking off to {TARGET_ALTITUDE}m using TOF...")
+        print(f"Taking off to {TARGET_ALTITUDE}m using TOF...")
         while running and altitude < TARGET_ALTITUDE - 0.1:
             altitude_raw = read_tof_distance(smbus, tof)
             if altitude_raw is not None:
@@ -141,7 +170,7 @@ def main():
                 if altitude < 0:
                     altitude = 0
             else:
-                print("⚠️  TOF read failed – holding throttle")
+                print("TOF read failed holding throttle")
             
             if current_throttle < THROTTLE_MAX:
                 current_throttle += THROTTLE_STEP
@@ -149,8 +178,8 @@ def main():
             print(f"Alt: {altitude:.2f}m | Throttle: {current_throttle}")
             time.sleep(0.2)
 
-        # Stabilize at target
-        print("✅ Target altitude reached. Holding...")
+        # Stabiliz at target
+        print("Target altitude reached. Holding...")
 
         # Hold for 60 seconds
         hold_start = time.time()
@@ -169,7 +198,7 @@ def main():
             time.sleep(0.2)
 
         # === Landing Phase ===
-        print("🛬 Landing...")
+        print("Landing...")
         while running and altitude > 0.05:
             altitude_raw = read_tof_distance(smbus, tof)
             if altitude_raw is not None:
@@ -186,16 +215,16 @@ def main():
         time.sleep(1)
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
     finally:
-        print("🪂 Final throttle cut & disarm")
+        print("Final throttle cut & disarm")
         send_rc_throttle(master, THROTTLE_MIN)
         time.sleep(0.5)
         disarm(master)
         tof.stop_ranging()
         smbus.close()
         i2c.deinit()
-        print("✅ Done.")
+        print("Done.")
 
 if __name__ == "__main__":
     main()
