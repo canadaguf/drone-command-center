@@ -380,10 +380,10 @@ class TelemetryReader:
     def connect(self) -> bool:
         """Connect to MAVLink."""
         try:
-            # Build connection string - use explicit serial format for pymavlink
+            # Build connection string - pymavlink expects device:baud for serial
             if self.connection_string.startswith('/dev/'):
-                # Serial connection: format is serial:device:baud
-                conn_str = f"serial:{self.connection_string}:{self.baud}"
+                # Serial connection: format is device:baud (no "serial:" prefix)
+                conn_str = f"{self.connection_string}:{self.baud}"
             else:
                 # TCP/UDP connection (use as-is)
                 conn_str = self.connection_string
@@ -593,36 +593,58 @@ def main():
         telemetry_reader = TelemetryReader(args.mavlink, args.mavlink_baud)
         telemetry_reader.connect()
         
-        # Initialize FFmpeg process for proper MP4 recording with timestamps
-        # FFmpeg will create a proper MP4 container with correct frame rate metadata
-        ffmpeg_cmd = [
-            'ffmpeg',
-            '-y',  # Overwrite output file
-            '-f', 'rawvideo',  # Input format: raw video
-            '-vcodec', 'rawvideo',
-            '-s', f'{args.width}x{args.height}',  # Frame size
-            '-pix_fmt', 'bgr24',  # Pixel format (BGR for OpenCV)
-            '-r', str(args.fps),  # Input frame rate
-            '-i', '-',  # Read from stdin
-            '-an',  # No audio
-            '-vcodec', 'libx264',  # H264 codec
-            '-pix_fmt', 'yuv420p',  # Output pixel format (compatible with most players)
-            '-preset', 'ultrafast',  # Encoding preset (ultrafast for real-time)
-            '-crf', '23',  # Quality (18-28, lower = better quality)
-            '-r', str(args.fps),  # Output frame rate (must match input)
-            output_path
-        ]
+        # Check if FFmpeg is available, otherwise fall back to OpenCV VideoWriter
+        ffmpeg_available = False
+        try:
+            result = subprocess.run(['which', 'ffmpeg'], capture_output=True, text=True)
+            ffmpeg_available = result.returncode == 0
+        except:
+            pass
         
-        logger.info(f"Starting FFmpeg: {' '.join(ffmpeg_cmd)}")
-        ffmpeg_process = subprocess.Popen(
-            ffmpeg_cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        
-        if ffmpeg_process.stdin is None:
-            raise Exception("Failed to start FFmpeg process")
+        if ffmpeg_available:
+            # Initialize FFmpeg process for proper MP4 recording with timestamps
+            # FFmpeg will create a proper MP4 container with correct frame rate metadata
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-y',  # Overwrite output file
+                '-f', 'rawvideo',  # Input format: raw video
+                '-vcodec', 'rawvideo',
+                '-s', f'{args.width}x{args.height}',  # Frame size
+                '-pix_fmt', 'bgr24',  # Pixel format (BGR for OpenCV)
+                '-r', str(args.fps),  # Input frame rate
+                '-i', '-',  # Read from stdin
+                '-an',  # No audio
+                '-vcodec', 'libx264',  # H264 codec
+                '-pix_fmt', 'yuv420p',  # Output pixel format (compatible with most players)
+                '-preset', 'ultrafast',  # Encoding preset (ultrafast for real-time)
+                '-crf', '23',  # Quality (18-28, lower = better quality)
+                '-r', str(args.fps),  # Output frame rate (must match input)
+                output_path
+            ]
+            
+            logger.info(f"Using FFmpeg for recording: {' '.join(ffmpeg_cmd)}")
+            ffmpeg_process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            if ffmpeg_process.stdin is None:
+                raise Exception("Failed to start FFmpeg process")
+            
+            video_writer = None
+        else:
+            # Fallback to OpenCV VideoWriter (may have speed issues, but will work)
+            logger.warning("FFmpeg not found. Using OpenCV VideoWriter (video may play fast).")
+            logger.warning("Install FFmpeg for proper MP4 timestamps: sudo apt-get install ffmpeg")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(output_path, fourcc, float(args.fps), (args.width, args.height))
+            
+            if not video_writer.isOpened():
+                raise Exception("Failed to open video writer")
+            
+            ffmpeg_process = None
         
         logger.info("Starting recording... Press Ctrl+C to stop")
         
@@ -666,12 +688,17 @@ def main():
                 frame_bgr, detections, tof_forward, tof_down, telemetry
             )
             
-            # Write frame to FFmpeg stdin (proper MP4 with timestamps)
-            try:
-                ffmpeg_process.stdin.write(frame_with_overlays.tobytes())
-            except BrokenPipeError:
-                logger.error("FFmpeg process ended unexpectedly")
-                break
+            # Write frame
+            if ffmpeg_process and ffmpeg_process.stdin:
+                # Write frame to FFmpeg stdin (proper MP4 with timestamps)
+                try:
+                    ffmpeg_process.stdin.write(frame_with_overlays.tobytes())
+                except BrokenPipeError:
+                    logger.error("FFmpeg process ended unexpectedly")
+                    break
+            elif video_writer:
+                # Write frame using OpenCV VideoWriter (fallback)
+                video_writer.write(frame_with_overlays)
             
             frame_count += 1
             if frame_count % 30 == 0:
@@ -688,7 +715,7 @@ def main():
         logger.info("Cleaning up...")
         
         # Close FFmpeg stdin and wait for encoding to finish
-        if 'ffmpeg_process' in locals() and ffmpeg_process.stdin:
+        if 'ffmpeg_process' in locals() and ffmpeg_process and ffmpeg_process.stdin:
             logger.info("Finalizing video encoding...")
             try:
                 ffmpeg_process.stdin.close()
@@ -706,6 +733,10 @@ def main():
                 ffmpeg_process.kill()
             except Exception as e:
                 logger.error(f"Error closing FFmpeg: {e}")
+        
+        # Close OpenCV VideoWriter if used
+        if 'video_writer' in locals() and video_writer:
+            video_writer.release()
         
         if camera:
             camera.stop()
