@@ -5,30 +5,30 @@ camera:
   rotation: 0  # 0|90|180|270, rotates overlay accordingly
 
 yolo:
-  model_path: "/home/pi/models/yolo11n.onnx"
+  model_path: "/home/ilya/models/yolo11n.onnx"
   confidence: 0.4
   iou: 0.45
   device: "cpu"  # ultralytics device string
   max_det: 10
 
 output:
-  video_path: "/home/pi/videos/recording.mp4"
+  video_path: "/home/ilya/videos/recording.mp4"
   fourcc: "mp4v"
   bitrate: 8000000  # ~8Mbps
-  log_path: "/home/pi/videos/recording_log.csv"
+  log_path: "/home/ilya/videos/recording_log.csv"
   log_enabled: true
 
 tof:
   enabled: true
   bus: 1
-  address: 0x29
+  address: 0x70
   poll_hz: 20
   label: "ToF (m)"
 
 sbus:
   enabled: true
-  port: "/dev/ttyS0"
-  baudrate: 100000
+  port: "/dev/ttyAMA0"
+  baudrate: 256000
   inverted: true
   poll_hz: 50
   channel_map:
