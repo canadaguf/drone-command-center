@@ -1,0 +1,58 @@
+camera:
+  width: 1280
+  height: 720
+  fps: 30
+  rotation: 0  # 0|90|180|270, rotates overlay accordingly
+
+yolo:
+  model_path: "/home/pi/models/yolo11n.onnx"
+  confidence: 0.4
+  iou: 0.45
+  device: "cpu"  # ultralytics device string
+  max_det: 10
+
+output:
+  video_path: "/home/pi/videos/recording.mp4"
+  fourcc: "mp4v"
+  bitrate: 8000000  # ~8Mbps
+  log_path: "/home/pi/videos/recording_log.csv"
+  log_enabled: true
+
+tof:
+  enabled: true
+  bus: 1
+  address: 0x29
+  poll_hz: 20
+  label: "ToF (m)"
+
+sbus:
+  enabled: true
+  port: "/dev/ttyS0"
+  baudrate: 100000
+  inverted: true
+  poll_hz: 50
+  channel_map:
+    throttle: 2   # SBUS channel 3
+    roll: 0       # channel 1
+    pitch: 1      # channel 2
+    yaw: 3        # channel 4
+
+overlay:
+  font_scale: 0.6
+  thickness: 2
+  color: [0, 255, 0]
+  bg_color: [0, 0, 0]
+  bg_alpha: 0.45
+  margin: 10
+  line_spacing: 8
+  # positions: "top_left", "top_right", "bottom_left", "bottom_right"
+  blocks:
+    detections: "top_left"
+    tof: "top_right"
+    rc: "bottom_right"
+    status: "bottom_left"
+
+general:
+  display_preview: false
+  exit_hotkey: "q"
+
