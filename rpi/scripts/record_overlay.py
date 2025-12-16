@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 import yaml
-from ultralytics import YOLO
 from picamera2 import Picamera2
 
 CURRENT_DIR = Path(__file__).parent
@@ -22,6 +21,22 @@ if str(CURRENT_DIR) not in sys.path:
 
 from tof_reader import ToFReader
 from sbus_reader import SBUSReader
+
+# COCO class names (80)
+COCO_NAMES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
+    "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
+    "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
+    "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
+    "toothbrush",
+]
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -90,25 +105,68 @@ def draw_block(
         cursor_y += h + line_spacing
 
 
-def parse_detections(result) -> List[Dict[str, Any]]:
+def parse_onnx_detections(
+    outputs: np.ndarray,
+    img_shape: Tuple[int, int],
+    conf_thres: float,
+    iou_thres: float,
+    max_det: int,
+    class_names: List[str],
+) -> List[Dict[str, Any]]:
+    """Parse YOLOv8/11 ONNX outputs (shape [1, 84, N])."""
     detections: List[Dict[str, Any]] = []
-    if result is None or result.boxes is None:
+    if outputs is None or len(outputs) == 0:
         return detections
-    names = result.names
-    for idx, box in enumerate(result.boxes):
-        xyxy = box.xyxy[0].tolist()
-        cls_id = int(box.cls[0])
-        cls_name = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
-        conf = float(box.conf[0]) if box.conf is not None else 0.0
-        detections.append(
-            {
-                "id": idx + 1,
-                "bbox": (int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])),
-                "cls": cls_name,
-                "conf": conf,
-            }
-        )
-    return detections
+
+    preds = outputs[0]  # [84, N]
+    num_candidates = preds.shape[1]
+    x_factor = img_shape[1] / 640.0
+    y_factor = img_shape[0] / 640.0
+
+    boxes: List[List[int]] = []
+    scores: List[float] = []
+    class_ids: List[int] = []
+
+    for i in range(num_candidates):
+        cls_scores = preds[4:, i]
+        max_score = float(np.max(cls_scores))
+        if max_score < conf_thres:
+            continue
+        cls_id = int(np.argmax(cls_scores))
+
+        cx, cy, w, h = preds[0:4, i]
+        left = int((cx - w / 2) * x_factor)
+        top = int((cy - h / 2) * y_factor)
+        width = int(w * x_factor)
+        height = int(h * y_factor)
+
+        left = max(0, min(left, img_shape[1] - 1))
+        top = max(0, min(top, img_shape[0] - 1))
+        width = max(1, min(width, img_shape[1] - left))
+        height = max(1, min(height, img_shape[0] - top))
+
+        boxes.append([left, top, width, height])
+        scores.append(max_score)
+        class_ids.append(cls_id)
+
+    dets: List[Dict[str, Any]] = []
+    if boxes:
+        indices = cv2.dnn.NMSBoxes(boxes, scores, conf_thres, iou_thres)
+        if len(indices) > 0:
+            indices = np.array(indices).flatten().tolist()
+            for idx, i in enumerate(indices[:max_det]):
+                x, y, w, h = boxes[i]
+                cls_id = class_ids[i]
+                cls_name = class_names[cls_id] if 0 <= cls_id < len(class_names) else str(cls_id)
+                dets.append(
+                    {
+                        "id": idx + 1,
+                        "bbox": (x, y, x + w, y + h),
+                        "cls": cls_name,
+                        "conf": scores[i],
+                    }
+                )
+    return dets
 
 
 def draw_detections(frame: np.ndarray, detections: List[Dict[str, Any]]) -> None:
@@ -119,6 +177,35 @@ def draw_detections(frame: np.ndarray, detections: List[Dict[str, Any]]) -> None
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
         cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw, y1), (0, 255, 0), -1)
         cv2.putText(frame, label, (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2, cv2.LINE_AA)
+
+
+def load_onnx_model(model_path: str) -> cv2.dnn_Net:
+    net = cv2.dnn.readNetFromONNX(model_path)
+    net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+    net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+    return net
+
+
+def run_onnx_inference(
+    frame_rgb: np.ndarray,
+    net: cv2.dnn_Net,
+    input_size: int,
+    conf: float,
+    iou: float,
+    max_det: int,
+    class_names: List[str],
+) -> List[Dict[str, Any]]:
+    blob = cv2.dnn.blobFromImage(
+        frame_rgb,
+        scalefactor=1 / 255.0,
+        size=(input_size, input_size),
+        mean=(0, 0, 0),
+        swapRB=True,
+        crop=False,
+    )
+    net.setInput(blob)
+    outputs = net.forward()
+    return parse_onnx_detections(outputs, frame_rgb.shape[:2], conf, iou, max_det, class_names)
 
 
 def open_picam(width: int, height: int, fps: int) -> Picamera2:
@@ -143,7 +230,9 @@ def main(cfg_path: Path) -> None:
     rotation = int(camera_cfg.get("rotation", 0))
 
     yolo_cfg = cfg.get("yolo", {})
-    model = YOLO(yolo_cfg.get("model_path", "yolo11n.pt"))
+    input_size = int(yolo_cfg.get("input_size", 640))
+    class_names = COCO_NAMES
+    net = load_onnx_model(yolo_cfg.get("model_path", "yolo11n.onnx"))
 
     tof_cfg = cfg.get("tof", {})
     tof_reader = ToFReader(
@@ -221,15 +310,15 @@ def main(cfg_path: Path) -> None:
         frame_rgb = rotate_frame(frame_rgb, rotation)
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
-        results = model(
+        detections = run_onnx_inference(
             frame_rgb,
-            verbose=False,
-            conf=yolo_cfg.get("confidence", 0.4),
-            iou=yolo_cfg.get("iou", 0.45),
-            device=yolo_cfg.get("device", "cpu"),
-            max_det=yolo_cfg.get("max_det", 10),
+            net,
+            input_size=input_size,
+            conf=float(yolo_cfg.get("confidence", 0.4)),
+            iou=float(yolo_cfg.get("iou", 0.45)),
+            max_det=int(yolo_cfg.get("max_det", 10)),
+            class_names=class_names,
         )
-        detections = parse_detections(results[0] if results else None)
         draw_detections(frame_bgr, detections)
 
         # Build overlay blocks
