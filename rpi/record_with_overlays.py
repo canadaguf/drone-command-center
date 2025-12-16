@@ -7,6 +7,7 @@ import argparse
 import errno
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -19,14 +20,7 @@ import board
 import busio
 import adafruit_vl53l1x
 from smbus2 import SMBus
-
-# Import helpers from scripts directory
-CURRENT_DIR = Path(__file__).parent
-SCRIPTS_DIR = CURRENT_DIR / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from sbus_reader import SBUSReader
+import serial
 
 # Configuration constants
 MULTIPLEXER_ADDRESS = 0x70  # TCA9548A default address
@@ -37,6 +31,12 @@ CHANNEL_DOWN = 1  # Down sensor channel
 # I2C retry configuration
 MAX_I2C_RETRIES = 5
 BASE_RETRY_DELAY = 0.02  # 20ms base delay
+
+# SBUS configuration
+SBUS_FRAME_LEN = 25
+SBUS_HEADER = 0x0F
+SBUS_MIN = 172
+SBUS_MAX = 1811
 
 # COCO class names (person is class 0)
 PERSON_CLASS_ID = 0
@@ -165,6 +165,113 @@ class SimpleTracker:
         union = area1 + area2 - intersection
         
         return intersection / union if union > 0 else 0.0
+
+
+class SBUSReader:
+    """SBUS reader for RC channels."""
+    
+    def __init__(self, port: str = "/dev/ttyAMA0", baudrate: int = 256000, inverted: bool = True, poll_hz: int = 50):
+        self.port = port
+        self.baudrate = baudrate
+        self.inverted = inverted
+        self.poll_hz = max(10, poll_hz)
+        self._ser: Optional[serial.Serial] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._latest: Optional[List[int]] = None
+    
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="sbus-reader", daemon=True)
+        self._thread.start()
+    
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1.5)
+        self._close()
+    
+    def latest_channels(self) -> Optional[List[int]]:
+        with self._lock:
+            return list(self._latest) if self._latest else None
+    
+    def latest_normalized(self) -> Optional[List[float]]:
+        chans = self.latest_channels()
+        if chans is None:
+            return None
+        return [max(0.0, min(1.0, (v - SBUS_MIN) / float(SBUS_MAX - SBUS_MIN))) for v in chans]
+    
+    def _decode_frame(self, frame: bytes) -> Optional[List[int]]:
+        """Decode 16 channel values from a 25-byte SBUS frame."""
+        if len(frame) != SBUS_FRAME_LEN or frame[0] != SBUS_HEADER:
+            return None
+        
+        chans = []
+        bits = 0
+        bit_index = 0
+        for i in range(1, 23):
+            bits |= frame[i] << bit_index
+            bit_index += 8
+            while bit_index >= 11 and len(chans) < 16:
+                chans.append(bits & 0x7FF)
+                bits >>= 11
+                bit_index -= 11
+        
+        if len(chans) < 16:
+            chans.extend([SBUS_MIN] * (16 - len(chans)))
+        
+        return chans[:16]
+    
+    def _run(self) -> None:
+        interval = 1.0 / self.poll_hz
+        try:
+            self._ser = serial.Serial(
+                self.port,
+                baudrate=self.baudrate,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_EVEN,
+                stopbits=serial.STOPBITS_TWO,
+                timeout=0.02,
+            )
+        except Exception:
+            self._close()
+            return
+        
+        buffer = bytearray()
+        while not self._stop.is_set():
+            start = time.time()
+            try:
+                data = self._ser.read(self._ser.in_waiting or SBUS_FRAME_LEN)
+                if data:
+                    buffer.extend(data)
+                    while len(buffer) >= SBUS_FRAME_LEN:
+                        if buffer[0] != SBUS_HEADER:
+                            buffer.pop(0)
+                            continue
+                        frame = bytes(buffer[:SBUS_FRAME_LEN])
+                        buffer = buffer[SBUS_FRAME_LEN:]
+                        decoded = self._decode_frame(frame)
+                        if decoded:
+                            with self._lock:
+                                self._latest = decoded
+            except Exception:
+                pass
+            
+            elapsed = time.time() - start
+            sleep_for = max(0.0, interval - elapsed)
+            time.sleep(sleep_for)
+        
+        self._close()
+    
+    def _close(self) -> None:
+        try:
+            if self._ser and self._ser.is_open:
+                self._ser.close()
+        except Exception:
+            pass
 
 
 class ToFSensorReader:
@@ -353,8 +460,8 @@ def parse_onnx_detections(
     
     preds = outputs[0]  # [84, N]
     num_candidates = preds.shape[1]
-    x_factor = img_shape[1] / 640.0
-    y_factor = img_shape[0] / 640.0
+    x_factor = img_shape[1] / 320.0
+    y_factor = img_shape[0] / 320.0
     
     boxes: List[List[int]] = []
     scores: List[float] = []
@@ -495,7 +602,12 @@ def main():
     picam2 = Picamera2()
     cfg = picam2.create_preview_configuration(
         main={"size": (args.width, args.height), "format": "RGB888"},
-        controls={"FrameRate": args.fps},
+        controls={
+            "FrameRate": args.fps,
+            "AwbEnable": True,
+            "AwbMode": 3,  # Daylight mode (less blue)
+            "Saturation": 1.0,
+        },
     )
     picam2.configure(cfg)
     picam2.start()
@@ -523,8 +635,19 @@ def main():
     print("="*60 + "\n")
     
     frame_count = 0
+    frame_time = 1.0 / args.fps  # Time per frame in seconds
+    last_frame_time = time.time()
+    
     try:
         while not stop_flag:
+            # Control frame rate
+            current_time = time.time()
+            elapsed = current_time - last_frame_time
+            if elapsed < frame_time:
+                time.sleep(frame_time - elapsed)
+            
+            last_frame_time = time.time()
+            
             # Capture frame
             frame_rgb = picam2.capture_array()
             if frame_rgb is None:
@@ -533,7 +656,7 @@ def main():
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
             
             # Run YOLO detection
-            resized = cv2.resize(frame_rgb, (640, 640), interpolation=cv2.INTER_LINEAR)
+            resized = cv2.resize(frame_rgb, (320, 320), interpolation=cv2.INTER_LINEAR)
             blob = resized.astype(np.float32) / 255.0
             blob = np.transpose(blob, (2, 0, 1))  # HWC -> CHW
             blob = np.expand_dims(blob, 0)  # add batch
