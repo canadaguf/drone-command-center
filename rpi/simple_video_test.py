@@ -46,15 +46,18 @@ def main():
         logger.info("Initializing camera...")
         camera = Picamera2()
         
-        # Simple configuration - RGB888 for natural colors
-        config = camera.create_preview_configuration(
+        # Configuration for natural colors - try video configuration for better color accuracy
+        # Use video configuration which is optimized for recording
+        config = camera.create_video_configuration(
             main={"size": (width, height), "format": "RGB888"},
             controls={
                 "FrameRate": fps,
                 "AwbEnable": True,  # Auto white balance
-                "Saturation": 1.0,  # Normal saturation
-                "Contrast": 1.0,     # Normal contrast
-                "Brightness": 0.0    # Default brightness
+                "AwbMode": 0,  # Auto white balance mode
+                "Saturation": 1.0,  # Normal saturation (1.0 = default)
+                "Contrast": 1.0,     # Normal contrast (1.0 = default)
+                "Brightness": 0.0,   # Default brightness
+                "ColourGains": (1.0, 1.0)  # Neutral color gains
             }
         )
         camera.configure(config)
@@ -72,18 +75,22 @@ def main():
         
         if ffmpeg_available:
             # Use FFmpeg for proper MP4 with correct timestamps
+            # Use rgb24 instead of bgr24 to avoid color channel swap
             ffmpeg_cmd = [
                 'ffmpeg',
                 '-y',  # Overwrite output
                 '-f', 'rawvideo',
                 '-vcodec', 'rawvideo',
                 '-s', f'{width}x{height}',
-                '-pix_fmt', 'bgr24',
+                '-pix_fmt', 'rgb24',  # RGB24 format (not BGR) to preserve natural colors
                 '-r', str(fps),  # Input frame rate
                 '-i', '-',  # Read from stdin
                 '-an',  # No audio
                 '-vcodec', 'libx264',
                 '-pix_fmt', 'yuv420p',
+                '-colorspace', 'bt709',  # Use BT.709 color space (standard for video)
+                '-color_primaries', 'bt709',
+                '-color_trc', 'bt709',
                 '-preset', 'ultrafast',
                 '-crf', '23',
                 '-r', str(fps),  # Output frame rate
@@ -124,20 +131,21 @@ def main():
             if sleep_time > 0:
                 time.sleep(sleep_time)
             
-            # Capture frame (RGB888 format)
+            # Capture frame (RGB888 format from camera)
             frame_rgb = camera.capture_array()
             
-            # Convert RGB to BGR for OpenCV/FFmpeg
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-            
-            # Write frame
+            # Write frame directly as RGB (no conversion needed)
+            # Picamera2 RGB888 is already in RGB order, so we use it directly
             if ffmpeg_process and ffmpeg_process.stdin:
                 try:
-                    ffmpeg_process.stdin.write(frame_bgr.tobytes())
+                    # Write RGB frame directly (no BGR conversion)
+                    ffmpeg_process.stdin.write(frame_rgb.tobytes())
                 except BrokenPipeError:
                     logger.error("FFmpeg process ended unexpectedly")
                     break
             elif 'video_writer' in locals():
+                # OpenCV VideoWriter expects BGR, so convert only for fallback
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
                 video_writer.write(frame_bgr)
             
             frame_count += 1
