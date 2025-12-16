@@ -233,20 +233,24 @@ def open_picam(width: int, height: int, fps: int, cam_controls: Dict[str, Any]) 
     awb_mode_val = AWB_MODE_MAP.get(str(awb_mode_cfg).lower(), 0)
     colour_temperature = cam_controls.get("colour_temperature")
     awb_gains = cam_controls.get("awb_gains")
+    controls = {
+        "FrameRate": _control_value("fps", fps, int),
+        "AwbEnable": bool(cam_controls.get("awb_enable", True)),
+        "AwbMode": awb_mode_val,
+        "Brightness": _control_value("brightness", cam_controls.get("brightness", 0.0), float),
+        "Contrast": _control_value("contrast", cam_controls.get("contrast", 1.0), float),
+        "Saturation": _control_value("saturation", cam_controls.get("saturation", 1.0), float),
+        "Sharpness": _control_value("sharpness", cam_controls.get("sharpness", 1.0), float),
+        "ColourTemperature": _control_value("colour_temperature", colour_temperature, int)
+        if colour_temperature is not None
+        else None,
+    }
+    # Remove None entries (libcamera rejects None)
+    controls = {k: v for k, v in controls.items() if v is not None}
+
     cfg = picam2.create_preview_configuration(
         main={"size": (width, height), "format": "RGB888"},
-        controls={
-            "FrameRate": _control_value("fps", fps, int),
-            "AwbEnable": bool(cam_controls.get("awb_enable", True)),
-            "AwbMode": awb_mode_val,
-            "Brightness": _control_value("brightness", cam_controls.get("brightness", 0.0), float),
-            "Contrast": _control_value("contrast", cam_controls.get("contrast", 1.0), float),
-            "Saturation": _control_value("saturation", cam_controls.get("saturation", 1.0), float),
-            "Sharpness": _control_value("sharpness", cam_controls.get("sharpness", 1.0), float),
-            "ColourTemperature": _control_value("colour_temperature", colour_temperature, int)
-            if colour_temperature is not None
-            else None,
-        },
+        controls=controls,
     )
     if awb_gains and isinstance(awb_gains, (list, tuple)) and len(awb_gains) == 2:
         # Manual AWB gains override if provided
