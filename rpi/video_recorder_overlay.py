@@ -13,6 +13,7 @@ import time
 import errno
 import logging
 import argparse
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
@@ -592,13 +593,36 @@ def main():
         telemetry_reader = TelemetryReader(args.mavlink, args.mavlink_baud)
         telemetry_reader.connect()
         
-        # Initialize video writer with proper codec and FPS
-        # Use mp4v codec (widely supported) with explicit FPS
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        video_writer = cv2.VideoWriter(output_path, fourcc, float(args.fps), (args.width, args.height))
+        # Initialize FFmpeg process for proper MP4 recording with timestamps
+        # FFmpeg will create a proper MP4 container with correct frame rate metadata
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-y',  # Overwrite output file
+            '-f', 'rawvideo',  # Input format: raw video
+            '-vcodec', 'rawvideo',
+            '-s', f'{args.width}x{args.height}',  # Frame size
+            '-pix_fmt', 'bgr24',  # Pixel format (BGR for OpenCV)
+            '-r', str(args.fps),  # Input frame rate
+            '-i', '-',  # Read from stdin
+            '-an',  # No audio
+            '-vcodec', 'libx264',  # H264 codec
+            '-pix_fmt', 'yuv420p',  # Output pixel format (compatible with most players)
+            '-preset', 'ultrafast',  # Encoding preset (ultrafast for real-time)
+            '-crf', '23',  # Quality (18-28, lower = better quality)
+            '-r', str(args.fps),  # Output frame rate (must match input)
+            output_path
+        ]
         
-        if not video_writer.isOpened():
-            raise Exception("Failed to open video writer")
+        logger.info(f"Starting FFmpeg: {' '.join(ffmpeg_cmd)}")
+        ffmpeg_process = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        if ffmpeg_process.stdin is None:
+            raise Exception("Failed to start FFmpeg process")
         
         logger.info("Starting recording... Press Ctrl+C to stop")
         
@@ -642,8 +666,12 @@ def main():
                 frame_bgr, detections, tof_forward, tof_down, telemetry
             )
             
-            # Write frame
-            video_writer.write(frame_with_overlays)
+            # Write frame to FFmpeg stdin (proper MP4 with timestamps)
+            try:
+                ffmpeg_process.stdin.write(frame_with_overlays.tobytes())
+            except BrokenPipeError:
+                logger.error("FFmpeg process ended unexpectedly")
+                break
             
             frame_count += 1
             if frame_count % 30 == 0:
@@ -658,8 +686,27 @@ def main():
     finally:
         # Cleanup
         logger.info("Cleaning up...")
-        if video_writer:
-            video_writer.release()
+        
+        # Close FFmpeg stdin and wait for encoding to finish
+        if 'ffmpeg_process' in locals() and ffmpeg_process.stdin:
+            logger.info("Finalizing video encoding...")
+            try:
+                ffmpeg_process.stdin.close()
+                ffmpeg_process.wait(timeout=30)  # Wait up to 30 seconds for encoding
+                
+                # Check for errors
+                if ffmpeg_process.returncode != 0:
+                    stderr_output = ffmpeg_process.stderr.read().decode('utf-8', errors='ignore')
+                    logger.warning(f"FFmpeg exited with code {ffmpeg_process.returncode}")
+                    logger.debug(f"FFmpeg stderr: {stderr_output}")
+                else:
+                    logger.info("Video encoding completed successfully")
+            except subprocess.TimeoutExpired:
+                logger.warning("FFmpeg encoding timed out, killing process")
+                ffmpeg_process.kill()
+            except Exception as e:
+                logger.error(f"Error closing FFmpeg: {e}")
+        
         if camera:
             camera.stop()
             camera.close()
