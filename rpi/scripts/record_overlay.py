@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 import yaml
+import onnxruntime as ort
 from picamera2 import Picamera2
 
 CURRENT_DIR = Path(__file__).parent
@@ -179,33 +180,32 @@ def draw_detections(frame: np.ndarray, detections: List[Dict[str, Any]]) -> None
         cv2.putText(frame, label, (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2, cv2.LINE_AA)
 
 
-def load_onnx_model(model_path: str) -> cv2.dnn_Net:
-    net = cv2.dnn.readNetFromONNX(model_path)
-    net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-    net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-    return net
+def create_ort_session(model_path: str) -> Tuple[ort.InferenceSession, str]:
+    """Create ONNX Runtime session and return session + input name."""
+    session = ort.InferenceSession(
+        model_path,
+        providers=["CPUExecutionProvider"],
+    )
+    input_name = session.get_inputs()[0].name
+    return session, input_name
 
 
-def run_onnx_inference(
+def run_ort_inference(
     frame_rgb: np.ndarray,
-    net: cv2.dnn_Net,
+    session: ort.InferenceSession,
+    input_name: str,
     input_size: int,
     conf: float,
     iou: float,
     max_det: int,
     class_names: List[str],
 ) -> List[Dict[str, Any]]:
-    blob = cv2.dnn.blobFromImage(
-        frame_rgb,
-        scalefactor=1 / 255.0,
-        size=(input_size, input_size),
-        mean=(0, 0, 0),
-        swapRB=True,
-        crop=False,
-    )
-    net.setInput(blob)
-    outputs = net.forward()
-    return parse_onnx_detections(outputs, frame_rgb.shape[:2], conf, iou, max_det, class_names)
+    resized = cv2.resize(frame_rgb, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+    blob = resized.astype(np.float32) / 255.0
+    blob = np.transpose(blob, (2, 0, 1))  # HWC -> CHW
+    blob = np.expand_dims(blob, 0)  # add batch
+    outputs = session.run(None, {input_name: blob})
+    return parse_onnx_detections(outputs[0], frame_rgb.shape[:2], conf, iou, max_det, class_names)
 
 
 def open_picam(width: int, height: int, fps: int) -> Picamera2:
@@ -232,7 +232,7 @@ def main(cfg_path: Path) -> None:
     yolo_cfg = cfg.get("yolo", {})
     input_size = int(yolo_cfg.get("input_size", 640))
     class_names = COCO_NAMES
-    net = load_onnx_model(yolo_cfg.get("model_path", "yolo11n.onnx"))
+    session, input_name = create_ort_session(yolo_cfg.get("model_path", "yolo11n.onnx"))
 
     tof_cfg = cfg.get("tof", {})
     tof_reader = ToFReader(
@@ -310,9 +310,10 @@ def main(cfg_path: Path) -> None:
         frame_rgb = rotate_frame(frame_rgb, rotation)
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
-        detections = run_onnx_inference(
+        detections = run_ort_inference(
             frame_rgb,
-            net,
+            session,
+            input_name,
             input_size=input_size,
             conf=float(yolo_cfg.get("confidence", 0.4)),
             iou=float(yolo_cfg.get("iou", 0.45)),
