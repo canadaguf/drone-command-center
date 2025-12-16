@@ -79,15 +79,20 @@ class ToFReader:
 
         self._cleanup()
 
-    def _select_channel(self, channel: int) -> None:
+    def _select_channel(self, channel: int, retry_count: int = 0) -> None:
         if self.multiplexer_address is None or self._smbus is None:
             return
         try:
             channel_mask = 1 << channel
             self._smbus.write_byte(self.multiplexer_address, channel_mask)
             time.sleep(0.01)
-        except Exception:
-            pass
+        except OSError as e:
+            if (e.errno == errno.EAGAIN or e.errno == 11) and retry_count < 5:
+                delay = 0.02 * (2 ** retry_count)
+                time.sleep(delay)
+                return self._select_channel(channel, retry_count + 1)
+            else:
+                raise
 
     def _read_once(self) -> Optional[float]:
         if not self._sensor:
@@ -95,10 +100,37 @@ class ToFReader:
         try:
             if self.channel is not None:
                 self._select_channel(self.channel)
-            if not self._sensor.data_ready:
+            # data_ready with retry
+            data_ready = False
+            for attempt in range(3):
+                try:
+                    data_ready = self._sensor.data_ready
+                    break
+                except OSError as e:
+                    if e.errno == errno.EAGAIN or e.errno == 11:
+                        time.sleep(0.01 * (attempt + 1))
+                        continue
+                    else:
+                        raise
+            if not data_ready:
                 return None
-            dist_mm = self._sensor.distance
-            self._sensor.clear_interrupt()
+
+            dist_mm = None
+            for attempt in range(3):
+                try:
+                    dist_mm = self._sensor.distance
+                    break
+                except OSError as e:
+                    if e.errno == errno.EAGAIN or e.errno == 11:
+                        time.sleep(0.01 * (attempt + 1))
+                        continue
+                    else:
+                        raise
+            try:
+                self._sensor.clear_interrupt()
+            except Exception:
+                pass
+
             if dist_mm is None:
                 return None
             meters = dist_mm / 1000.0

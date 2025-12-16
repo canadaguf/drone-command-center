@@ -208,20 +208,51 @@ def run_ort_inference(
     return parse_onnx_detections(outputs[0], frame_rgb.shape[:2], conf, iou, max_det, class_names)
 
 
+AWB_MODE_MAP = {
+    "auto": 0,
+    "incandescent": 1,
+    "tungsten": 1,
+    "fluorescent": 2,
+    "indoor": 2,
+    "daylight": 3,
+    "sunny": 3,
+    "cloudy": 4,
+}
+
+
+def _control_value(name: str, value: Any, cast):
+    try:
+        return cast(value)
+    except Exception:
+        return None
+
+
 def open_picam(width: int, height: int, fps: int, cam_controls: Dict[str, Any]) -> Picamera2:
     picam2 = Picamera2()
+    awb_mode_cfg = cam_controls.get("awb_mode", "auto")
+    awb_mode_val = AWB_MODE_MAP.get(str(awb_mode_cfg).lower(), 0)
+    colour_temperature = cam_controls.get("colour_temperature")
+    awb_gains = cam_controls.get("awb_gains")
     cfg = picam2.create_preview_configuration(
         main={"size": (width, height), "format": "RGB888"},
         controls={
-            "FrameRate": fps,
-            "AwbEnable": cam_controls.get("awb_enable", True),
-            "AwbMode": cam_controls.get("awb_mode", "auto"),
-            "Brightness": cam_controls.get("brightness", 0.0),
-            "Contrast": cam_controls.get("contrast", 1.0),
-            "Saturation": cam_controls.get("saturation", 1.0),
-            "Sharpness": cam_controls.get("sharpness", 1.0),
+            "FrameRate": _control_value("fps", fps, int),
+            "AwbEnable": bool(cam_controls.get("awb_enable", True)),
+            "AwbMode": awb_mode_val,
+            "Brightness": _control_value("brightness", cam_controls.get("brightness", 0.0), float),
+            "Contrast": _control_value("contrast", cam_controls.get("contrast", 1.0), float),
+            "Saturation": _control_value("saturation", cam_controls.get("saturation", 1.0), float),
+            "Sharpness": _control_value("sharpness", cam_controls.get("sharpness", 1.0), float),
+            "ColourTemperature": _control_value("colour_temperature", colour_temperature, int)
+            if colour_temperature is not None
+            else None,
         },
     )
+    if awb_gains and isinstance(awb_gains, (list, tuple)) and len(awb_gains) == 2:
+        # Manual AWB gains override if provided
+        cfg["controls"]["AwbEnable"] = False
+        cfg["controls"]["AwbMode"] = 0
+        cfg["controls"]["ColourGains"] = tuple(float(g) for g in awb_gains)
     picam2.configure(cfg)
     picam2.start()
     time.sleep(1.5)  # warm-up
@@ -246,7 +277,7 @@ def main(cfg_path: Path) -> None:
     }
 
     yolo_cfg = cfg.get("yolo", {})
-    input_size = int(yolo_cfg.get("input_size", 640))
+    input_size = int(yolo_cfg.get("input_size", 320))
     class_names = COCO_NAMES
     session, input_name = create_ort_session(yolo_cfg.get("model_path", "yolo11n.onnx"))
 

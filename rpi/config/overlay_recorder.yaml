@@ -4,14 +4,17 @@ camera:
   fps: 30
   rotation: 0  # 0|90|180|270, rotates overlay accordingly
   awb_enable: true
-  awb_mode: "auto"
+  awb_mode: "auto"   # try "daylight" or "cloudy" if colors look cool
+  colour_temperature: 5000  # optional; comment out to let auto choose
+  awb_gains: null    # e.g., [1.8, 1.4] to force manual gains; null to disable
   brightness: 0.0
   contrast: 1.0
-  saturation: 1.0
+  saturation: 1.0   # lower (e.g., 0.9) if image is too saturated/blue
   sharpness: 1.0
 
 yolo:
   model_path: "/home/ilya/models/yolo11n.onnx"
+  input_size: 320
   confidence: 0.4
   iou: 0.45
   device: "cpu"  # ultralytics device string
