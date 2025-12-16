@@ -379,7 +379,14 @@ class TelemetryReader:
     def connect(self) -> bool:
         """Connect to MAVLink."""
         try:
-            conn_str = f"{self.connection_string}:{self.baud}"
+            # Build connection string - use explicit serial format for pymavlink
+            if self.connection_string.startswith('/dev/'):
+                # Serial connection: format is serial:device:baud
+                conn_str = f"serial:{self.connection_string}:{self.baud}"
+            else:
+                # TCP/UDP connection (use as-is)
+                conn_str = self.connection_string
+            
             logger.info(f"Connecting to MAVLink at {conn_str}...")
             self.master = mavutil.mavlink_connection(conn_str)
             self.master.wait_heartbeat(timeout=10)
@@ -510,8 +517,8 @@ def main():
                        help="Path to YOLO ONNX model")
     parser.add_argument("--output", default=None,
                        help="Output video path (default: timestamped)")
-    parser.add_argument("--width", type=int, default=640, help="Video width")
-    parser.add_argument("--height", type=int, default=480, help="Video height")
+    parser.add_argument("--width", type=int, default=1980, help="Video width")
+    parser.add_argument("--height", type=int, default=1080, help="Video height")
     parser.add_argument("--fps", type=int, default=30, help="Video FPS")
     parser.add_argument("--mavlink", default="/dev/ttyAMA0", help="MAVLink connection")
     parser.add_argument("--mavlink-baud", type=int, default=256000, help="MAVLink baud rate")
