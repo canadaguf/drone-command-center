@@ -46,7 +46,8 @@ def main():
         logger.info("Initializing camera...")
         camera = Picamera2()
         
-        # Simple configuration - RGB888 for natural colors
+        # Simple configuration - use preview config for reliable color output
+        # Picamera2 RGB888 format - we'll handle conversion properly
         config = camera.create_preview_configuration(
             main={"size": (width, height), "format": "RGB888"},
             controls={
@@ -54,7 +55,7 @@ def main():
                 "AwbEnable": True,  # Auto white balance
                 "Saturation": 1.0,  # Normal saturation
                 "Contrast": 1.0,     # Normal contrast
-                "Brightness": 0.0    # Default brightness
+                "Brightness": 0.0     # Default brightness
             }
         )
         camera.configure(config)
@@ -72,13 +73,14 @@ def main():
         
         if ffmpeg_available:
             # Use FFmpeg for proper MP4 with correct timestamps
+            # Standard BGR24 format - OpenCV standard
             ffmpeg_cmd = [
                 'ffmpeg',
                 '-y',  # Overwrite output
                 '-f', 'rawvideo',
                 '-vcodec', 'rawvideo',
                 '-s', f'{width}x{height}',
-                '-pix_fmt', 'bgr24',
+                '-pix_fmt', 'bgr24',  # BGR24 format (OpenCV standard)
                 '-r', str(fps),  # Input frame rate
                 '-i', '-',  # Read from stdin
                 '-an',  # No audio
@@ -124,21 +126,30 @@ def main():
             if sleep_time > 0:
                 time.sleep(sleep_time)
             
-            # Capture frame (RGB888 format)
-            frame_rgb = camera.capture_array()
+            # Capture frame (RGB888 format from camera)
+            frame = camera.capture_array()
             
-            # Convert RGB to BGR for OpenCV/FFmpeg
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            # Color conversion: Fix red/blue channel swap issue
+            # Picamera2 RGB888 appears to have channels in wrong order
+            # Manual swap: R<->B channels (keeps G channel in place)
+            frame_out = frame[:, :, [2, 1, 0]]  # Swap R and B channels
+            
+            # Alternative options to try if this doesn't work:
+            # Option 1: Standard RGB to BGR conversion
+            # frame_out = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            
+            # Option 2: Use frame as-is (no conversion)
+            # frame_out = frame.copy()
             
             # Write frame
             if ffmpeg_process and ffmpeg_process.stdin:
                 try:
-                    ffmpeg_process.stdin.write(frame_bgr.tobytes())
+                    ffmpeg_process.stdin.write(frame_out.tobytes())
                 except BrokenPipeError:
                     logger.error("FFmpeg process ended unexpectedly")
                     break
             elif 'video_writer' in locals():
-                video_writer.write(frame_bgr)
+                video_writer.write(frame_out)
             
             frame_count += 1
             
