@@ -5,12 +5,13 @@ Based on video_tst.py - uses same recording logic for proper timestamps and colo
 """
 
 from picamera2 import Picamera2
+from picamera2.encoders import H264Encoder
+from picamera2.outputs import FfmpegOutput
 import cv2
 import numpy as np
 import time
 import logging
 import argparse
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
@@ -233,6 +234,8 @@ def draw_yolo_overlays(frame: np.ndarray, detections: List[Dict[str, Any]]) -> n
     return overlay
 
 
+
+
 def main():
     parser = argparse.ArgumentParser(description="Record video with YOLO person detection")
     parser.add_argument("--model-path", default="/home/ilya/models/yolo11n.onnx",
@@ -264,11 +267,14 @@ def main():
     picam2.start()
     time.sleep(2)  # Wait for camera to stabilize
     
-    # Get camera info for FFmpeg
+    # Get camera info
     camera_config = picam2.camera_config
     width = camera_config['main']['size'][0]
     height = camera_config['main']['size'][1]
-    fps = camera_config['controls']['FrameRate']
+    controls = camera_config.get('controls', {})
+    fps = controls.get('FrameRate', 30)
+    
+    logger.info(f"Video resolution: {width}x{height} @ {fps}fps")
     
     # Initialize YOLO detector
     yolo_detector = YOLODetector(args.model_path, confidence=args.confidence)
@@ -279,22 +285,23 @@ def main():
     # Initialize tracker
     tracker = SimpleTracker()
     
-    # Set up FFmpeg for encoding (same approach as video_tst.py uses internally)
-    # Use H264Encoder approach but with manual frame feeding
+    # Use FFmpeg with same settings as video_tst.py's H264Encoder/FfmpegOutput
+    # This ensures proper timestamps - key is maintaining exact frame timing
+    import subprocess
     ffmpeg_cmd = [
         'ffmpeg',
         '-y',
         '-f', 'rawvideo',
         '-vcodec', 'rawvideo',
         '-s', f'{width}x{height}',
-        '-pix_fmt', 'rgb24',  # RGB format from camera
-        '-r', str(fps),
+        '-pix_fmt', 'rgb24',
+        '-r', str(fps),  # Input frame rate - CRITICAL for timestamps
         '-i', '-',
         '-an',
         '-vcodec', 'libx264',
         '-pix_fmt', 'yuv420p',
-        '-b:v', '10M',  # 10 Mbps bitrate (same as video_tst.py)
-        '-r', str(fps),
+        '-b:v', '10M',  # 10 Mbps (same as video_tst.py)
+        '-r', str(fps),  # Output frame rate - must match input
         output_path
     ]
     
@@ -309,12 +316,22 @@ def main():
     if ffmpeg_process.stdin is None:
         raise Exception("Failed to start FFmpeg process")
     
-    logger.info("Recording started...")
+    logger.info("Recording started... Press Ctrl+C to stop")
     
     try:
         frame_count = 0
+        start_time = time.time()
+        frame_interval = 1.0 / fps  # Time between frames
+        
         while True:
-            # Capture frame (RGB format from video config)
+            # CRITICAL: Maintain exact frame timing (like start_recording does)
+            current_time = time.time()
+            target_time = start_time + (frame_count * frame_interval)
+            sleep_time = target_time - current_time
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            
+            # Capture frame
             frame_rgb = picam2.capture_array()
             
             # Convert to BGR for OpenCV processing
@@ -329,10 +346,10 @@ def main():
             # Draw overlays
             frame_with_overlays = draw_yolo_overlays(frame_bgr, detections)
             
-            # Convert back to RGB for FFmpeg (same format as input)
+            # Convert back to RGB for FFmpeg
             frame_rgb_out = cv2.cvtColor(frame_with_overlays, cv2.COLOR_BGR2RGB)
             
-            # Write frame to FFmpeg
+            # Write frame to FFmpeg at exact timing
             try:
                 ffmpeg_process.stdin.write(frame_rgb_out.tobytes())
             except BrokenPipeError:
@@ -341,14 +358,16 @@ def main():
             
             frame_count += 1
             if frame_count % 30 == 0:
-                logger.info(f"Recorded {frame_count} frames")
+                elapsed = time.time() - start_time
+                actual_fps = frame_count / elapsed
+                logger.info(f"Recorded {frame_count} frames ({actual_fps:.1f} fps, target: {fps} fps)")
     
     except KeyboardInterrupt:
         logger.info("Stopping recording...")
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
     finally:
-        # Close FFmpeg
+        # Close FFmpeg properly
         if ffmpeg_process and ffmpeg_process.stdin:
             logger.info("Finalizing video encoding...")
             try:
