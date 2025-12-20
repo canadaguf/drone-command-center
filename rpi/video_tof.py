@@ -189,13 +189,13 @@ class ToFSensorReader:
 
 def create_tof_overlay(width, height, forward_dist, down_dist):
     """Create overlay image with ToF readings."""
+    # Picamera2 overlay needs RGBA format: (height, width, 4) with uint8
     overlay = np.zeros((height, width, 4), dtype=np.uint8)
     
     # Text settings
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.7
+    font_scale = 0.8
     thickness = 2
-    color = (0, 255, 0, 255)  # Green, fully opaque
     
     # Draw forward ToF reading (top right)
     if forward_dist is not None:
@@ -205,15 +205,17 @@ def create_tof_overlay(width, height, forward_dist, down_dist):
     
     text_size_forward, _ = cv2.getTextSize(text_forward, font, font_scale, thickness)
     text_x_forward = width - text_size_forward[0] - 20
-    text_y_forward = 30
+    text_y_forward = 35
     
-    # Background rectangle for forward reading
+    # Background rectangle for forward reading (BGR + Alpha)
     cv2.rectangle(overlay, 
                  (text_x_forward - 5, text_y_forward - text_size_forward[1] - 5),
                  (text_x_forward + text_size_forward[0] + 5, text_y_forward + 5),
-                 (0, 0, 0, 200), -1)  # Semi-transparent black background
+                 (0, 0, 0, 220), -1)  # Black background, mostly opaque
+    
+    # Draw text (BGR + Alpha) - Green text, fully opaque
     cv2.putText(overlay, text_forward, (text_x_forward, text_y_forward),
-               font, font_scale, color, thickness)
+               font, font_scale, (0, 255, 0, 255), thickness)
     
     # Draw down ToF reading (below forward)
     if down_dist is not None:
@@ -223,15 +225,17 @@ def create_tof_overlay(width, height, forward_dist, down_dist):
     
     text_size_down, _ = cv2.getTextSize(text_down, font, font_scale, thickness)
     text_x_down = width - text_size_down[0] - 20
-    text_y_down = text_y_forward + text_size_forward[1] + 20
+    text_y_down = text_y_forward + text_size_forward[1] + 25
     
     # Background rectangle for down reading
     cv2.rectangle(overlay,
                  (text_x_down - 5, text_y_down - text_size_down[1] - 5),
                  (text_x_down + text_size_down[0] + 5, text_y_down + 5),
-                 (0, 0, 0, 200), -1)  # Semi-transparent black background
+                 (0, 0, 0, 220), -1)  # Black background, mostly opaque
+    
+    # Draw text - Green text, fully opaque
     cv2.putText(overlay, text_down, (text_x_down, text_y_down),
-               font, font_scale, color, thickness)
+               font, font_scale, (0, 255, 0, 255), thickness)
     
     return overlay
 
@@ -257,7 +261,9 @@ def main():
     logger.info(f"Output: {output_path}")
     logger.info("Press Ctrl+C to stop")
     
-    # Initialize camera (same as video_tst.py)
+    # Initialize camera
+    # Note: Overlays in Picamera2 work with preview streams
+    # We'll use video config but ensure overlay is set correctly
     picam2 = Picamera2()
     video_config = picam2.create_video_configuration()
     picam2.configure(video_config)
@@ -281,6 +287,16 @@ def main():
     picam2.start()
     time.sleep(2)  # Wait for camera to stabilize
     
+    # Set initial overlay before recording (empty overlay)
+    # Overlay must match camera resolution exactly
+    initial_overlay = np.zeros((height, width, 4), dtype=np.uint8)
+    try:
+        picam2.set_overlay(initial_overlay)
+        logger.info(f"Overlay system initialized ({width}x{height})")
+    except Exception as e:
+        logger.warning(f"Could not set initial overlay: {e}")
+        logger.warning("Overlays may not be supported with this camera configuration")
+    
     # Start recording (same as video_tst.py) - this handles timestamps properly
     picam2.start_recording(encoder, output)
     logger.info("Recording started...")
@@ -290,6 +306,8 @@ def main():
     
     def overlay_update_loop():
         """Update overlay with ToF readings while recording."""
+        update_count = 0
+        error_count = 0
         while recording:
             if tof_reader:
                 tof_reader.update_readings()
@@ -298,11 +316,30 @@ def main():
                 # Create overlay
                 overlay_img = create_tof_overlay(width, height, forward_dist, down_dist)
                 
+                # Verify overlay format
+                if overlay_img.shape != (height, width, 4):
+                    logger.error(f"Overlay shape mismatch: {overlay_img.shape}, expected ({height}, {width}, 4)")
+                
                 # Set overlay on camera
                 try:
                     picam2.set_overlay(overlay_img)
+                    update_count += 1
+                    error_count = 0  # Reset error count on success
+                    if update_count % 10 == 0:
+                        logger.info(f"Overlay updated {update_count} times - Forward: {forward_dist:.2f}m, Down: {down_dist:.2f}m")
                 except Exception as e:
-                    logger.debug(f"Overlay update error: {e}")
+                    error_count += 1
+                    if error_count <= 3:  # Log first few errors
+                        logger.error(f"Overlay update error ({error_count}): {e}")
+                    elif error_count == 4:
+                        logger.error("Overlay errors continuing - check if overlays are supported during recording")
+            else:
+                # No ToF reader, set empty overlay
+                try:
+                    empty_overlay = np.zeros((height, width, 4), dtype=np.uint8)
+                    picam2.set_overlay(empty_overlay)
+                except Exception as e:
+                    logger.debug(f"Empty overlay error: {e}")
             
             time.sleep(0.1)  # Update overlay at 10 Hz
     
