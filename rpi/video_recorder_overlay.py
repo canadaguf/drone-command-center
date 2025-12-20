@@ -553,22 +553,15 @@ def main():
         logger.info("Initializing camera...")
         camera = Picamera2()
         
-        # Create camera configuration with proper color settings
-        # Use RGB888 format (standard format for natural colors)
-        config = camera.create_preview_configuration(
+        # Use video configuration (like video_tst.py) for proper colors and timestamps
+        # Specify RGB888 format for overlay processing, then convert to BGR for OpenCV
+        video_config = camera.create_video_configuration(
             main={"size": (args.width, args.height), "format": "RGB888"},
             controls={
-                "FrameRate": args.fps,
-                # Color controls for natural colors (per Picamera2 documentation)
-                "AwbEnable": True,  # Enable auto white balance
-                "AwbMode": 0,  # Auto white balance mode (0=Auto)
-                "Saturation": 1.0,  # Normal saturation (1.0 = default, range 0.0-32.0)
-                "Contrast": 1.0,  # Normal contrast (1.0 = default)
-                "Brightness": 0.0,  # Default brightness
-                "Sharpness": 1.0  # Normal sharpness (1.0 = default, range 0.0-16.0)
+                "FrameRate": args.fps
             }
         )
-        camera.configure(config)
+        camera.configure(video_config)
         camera.start()
         time.sleep(2)  # Wait for camera to stabilize
         logger.info("Camera initialized")
@@ -593,81 +586,58 @@ def main():
         telemetry_reader = TelemetryReader(args.mavlink, args.mavlink_baud)
         telemetry_reader.connect()
         
-        # Check if FFmpeg is available, otherwise fall back to OpenCV VideoWriter
-        ffmpeg_available = False
-        try:
-            result = subprocess.run(['which', 'ffmpeg'], capture_output=True, text=True)
-            ffmpeg_available = result.returncode == 0
-        except:
-            pass
+        # Use FFmpeg directly for frame-by-frame encoding with overlays
+        # This ensures proper timestamps (like video_tst.py) while allowing frame manipulation
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-y',  # Overwrite output file
+            '-f', 'rawvideo',
+            '-vcodec', 'rawvideo',
+            '-s', f'{args.width}x{args.height}',
+            '-pix_fmt', 'bgr24',  # BGR format for OpenCV
+            '-r', str(args.fps),  # Input frame rate
+            '-i', '-',  # Read from stdin
+            '-an',  # No audio
+            '-vcodec', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'ultrafast',
+            '-crf', '23',
+            '-r', str(args.fps),  # Output frame rate
+            output_path
+        ]
         
-        if ffmpeg_available:
-            # Initialize FFmpeg process for proper MP4 recording with timestamps
-            # FFmpeg will create a proper MP4 container with correct frame rate metadata
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-y',  # Overwrite output file
-                '-f', 'rawvideo',  # Input format: raw video
-                '-vcodec', 'rawvideo',
-                '-s', f'{args.width}x{args.height}',  # Frame size
-                '-pix_fmt', 'bgr24',  # Pixel format (BGR for OpenCV)
-                '-r', str(args.fps),  # Input frame rate
-                '-i', '-',  # Read from stdin
-                '-an',  # No audio
-                '-vcodec', 'libx264',  # H264 codec
-                '-pix_fmt', 'yuv420p',  # Output pixel format (compatible with most players)
-                '-preset', 'ultrafast',  # Encoding preset (ultrafast for real-time)
-                '-crf', '23',  # Quality (18-28, lower = better quality)
-                '-r', str(args.fps),  # Output frame rate (must match input)
-                output_path
-            ]
-            
-            logger.info(f"Using FFmpeg for recording: {' '.join(ffmpeg_cmd)}")
-            ffmpeg_process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            
-            if ffmpeg_process.stdin is None:
-                raise Exception("Failed to start FFmpeg process")
-            
-            video_writer = None
-        else:
-            # Fallback to OpenCV VideoWriter (may have speed issues, but will work)
-            logger.warning("FFmpeg not found. Using OpenCV VideoWriter (video may play fast).")
-            logger.warning("Install FFmpeg for proper MP4 timestamps: sudo apt-get install ffmpeg")
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            video_writer = cv2.VideoWriter(output_path, fourcc, float(args.fps), (args.width, args.height))
-            
-            if not video_writer.isOpened():
-                raise Exception("Failed to open video writer")
-            
-            ffmpeg_process = None
+        logger.info("Using FFmpeg for recording with proper timestamps")
+        ffmpeg_process = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        if ffmpeg_process.stdin is None:
+            raise Exception("Failed to start FFmpeg process")
+        
+        video_writer = None
         
         logger.info("Starting recording... Press Ctrl+C to stop")
         
         frame_count = 0
         start_time = time.time()
         frame_interval = 1.0 / args.fps  # Time between frames in seconds
-        next_frame_time = start_time
         
         while True:
             # Control frame rate - wait until it's time for next frame
             current_time = time.time()
-            sleep_time = next_frame_time - current_time
+            target_time = start_time + (frame_count * frame_interval)
+            sleep_time = target_time - current_time
             if sleep_time > 0:
                 time.sleep(sleep_time)
             
-            # Capture frame (RGB888 format)
-            frame = camera.capture_array()
+            # Capture frame (RGB888 format from video configuration)
+            frame_rgb = camera.capture_array()
             
-            # Convert RGB to BGR for OpenCV (RGB888 is already RGB, no alpha channel)
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            
-            # Update next frame time (use start time + frame_count * interval to prevent drift)
-            next_frame_time = start_time + (frame_count + 1) * frame_interval
+            # Convert RGB to BGR for OpenCV processing
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
             
             # Run YOLO detection
             detections = []
@@ -688,17 +658,13 @@ def main():
                 frame_bgr, detections, tof_forward, tof_down, telemetry
             )
             
-            # Write frame
+            # Write frame to FFmpeg (proper MP4 with timestamps)
             if ffmpeg_process and ffmpeg_process.stdin:
-                # Write frame to FFmpeg stdin (proper MP4 with timestamps)
                 try:
                     ffmpeg_process.stdin.write(frame_with_overlays.tobytes())
                 except BrokenPipeError:
                     logger.error("FFmpeg process ended unexpectedly")
                     break
-            elif video_writer:
-                # Write frame using OpenCV VideoWriter (fallback)
-                video_writer.write(frame_with_overlays)
             
             frame_count += 1
             if frame_count % 30 == 0:
@@ -733,10 +699,6 @@ def main():
                 ffmpeg_process.kill()
             except Exception as e:
                 logger.error(f"Error closing FFmpeg: {e}")
-        
-        # Close OpenCV VideoWriter if used
-        if 'video_writer' in locals() and video_writer:
-            video_writer.release()
         
         if camera:
             camera.stop()
