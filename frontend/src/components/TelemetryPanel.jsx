@@ -36,7 +36,7 @@ export default function TelemetryPanel({ telemetry }) {
 
       {/* Flight Status */}
       <div style={sectionStyle}>
-        <h4 style={sectionTitleStyle}>Flight Status</h4>
+        <h4 style={sectionTitleStyle}>Полётный статус</h4>
         <p><strong>Режим:</strong> {telemetry.mode ?? '—'}</p>
         <p><strong>Armed:</strong> {telemetry.armed ? '🟢 YES' : '🔴 NO'}</p>
         <p><strong>Скорость:</strong> {telemetry.velocity !== null && telemetry.velocity !== undefined ? `${telemetry.velocity.toFixed(2)} m/s` : '—'}</p>
@@ -53,7 +53,7 @@ export default function TelemetryPanel({ telemetry }) {
             fontWeight: 'bold',
             marginLeft: '8px'
           }}>
-            {telemetry.tracking_status ?? 'DISCONNECTED'}
+            {telemetry.tracking_status ?? 'ОТКЛЮЧЁН'}
           </span>
         </p>
         {telemetry.distance_mode && (
@@ -77,14 +77,14 @@ export default function TelemetryPanel({ telemetry }) {
 
       {/* Sensors */}
       <div style={sectionStyle}>
-        <h4 style={sectionTitleStyle}>Sensors</h4>
+        <h4 style={sectionTitleStyle}>Датчики</h4>
         <p><strong>ToF вперёд:</strong> {telemetry.tof_forward ?? '—'} m</p>
         <p><strong>ToF вниз:</strong> {telemetry.tof_down ?? '—'} m</p>
       </div>
 
       {/* Battery */}
       <div style={sectionStyle}>
-        <h4 style={sectionTitleStyle}>Power</h4>
+        <h4 style={sectionTitleStyle}>Питание</h4>
         <p>
           <strong>Батарея:</strong> 
           <span style={{ 

@@ -83,7 +83,7 @@ export default function ControlPanel() {
     <div>
       {/* Checks Group */}
       <div style={groupStyle}>
-        <h3 style={groupTitleStyle}>Checks</h3>
+        <h3 style={groupTitleStyle}>Проверки</h3>
         <div style={buttonRowStyle}>
           <div style={buttonWithStatusStyle}>
             <button className="control-btn" onClick={() => handleCommand('check_connection', 'connection')}>
@@ -102,7 +102,7 @@ export default function ControlPanel() {
 
       {/* Arming Group */}
       <div style={groupStyle}>
-        <h3 style={groupTitleStyle}>Arming</h3>
+        <h3 style={groupTitleStyle}>Запуск</h3>
         <div style={buttonRowStyle}>
           <div style={buttonWithStatusStyle}>
             <button
@@ -110,7 +110,7 @@ export default function ControlPanel() {
               onClick={() => setShowArmModal(true)}
               disabled={status.arm === 'sending'}
             >
-              Arm
+              ARM
             </button>
             {getStatusIndicator('arm')}
           </div>
@@ -120,7 +120,7 @@ export default function ControlPanel() {
               onClick={() => setShowDisarmModal(true)}
               disabled={status.disarm === 'sending'}
             >
-              Disarm
+              DISARM
             </button>
             {getStatusIndicator('disarm')}
           </div>
@@ -129,7 +129,7 @@ export default function ControlPanel() {
 
       {/* Flight Modes Group */}
       <div style={groupStyle}>
-        <h3 style={groupTitleStyle}>Flight Modes</h3>
+        <h3 style={groupTitleStyle}>Режимы полёта</h3>
         <div style={buttonRowStyle}>
           <div style={buttonWithStatusStyle}>
             <button className="control-btn" onClick={() => handleCommand('takeoff', 'liftoff')}>
@@ -155,7 +155,7 @@ export default function ControlPanel() {
       {/* Modals */}
       <ConfirmationModal
         isOpen={showArmModal}
-        title="Arm?"
+        title="Запуск?"
         message="Запуск дрона активиреут моторы. Убедитесь, что пропеллеры закреплены и дрон находится на ровной поверхности."
         onConfirm={() => {
           handleCommand('arm', 'arm');
@@ -166,8 +166,8 @@ export default function ControlPanel() {
 
       <ConfirmationModal
         isOpen={showDisarmModal}
-        title="Disarm?"
-        message="При выключении дрона, питание к моторам перемтанет поступать. Убедитесь, что дрон приземлился."
+        title="Выключение?"
+        message="При выключении дрона, питание к моторам перестанет поступать. Убедитесь, что дрон приземлился."
         onConfirm={() => {
           handleCommand('disarm', 'disarm');
           setShowDisarmModal(false);
