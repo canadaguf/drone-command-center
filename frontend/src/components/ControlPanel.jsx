@@ -156,7 +156,7 @@ export default function ControlPanel() {
       <ConfirmationModal
         isOpen={showArmModal}
         title="Запуск?"
-        message="Запуск дрона активиреут моторы. Убедитесь, что пропеллеры закреплены и дрон находится на ровной поверхности."
+        message="Запуск дрона активирует моторы. Убедитесь, что пропеллеры закреплены и дрон находится на ровной поверхности."
         onConfirm={() => {
           handleCommand('arm', 'arm');
           setShowArmModal(false);
