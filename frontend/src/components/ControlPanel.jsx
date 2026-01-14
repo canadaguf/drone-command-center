@@ -87,13 +87,13 @@ export default function ControlPanel() {
         <div style={buttonRowStyle}>
           <div style={buttonWithStatusStyle}>
             <button className="control-btn" onClick={() => handleCommand('check_connection', 'connection')}>
-              Check Drone Connection
+              Проверка подключения дрона
             </button>
             {getStatusIndicator('connection')}
           </div>
           <div style={buttonWithStatusStyle}>
             <button className="control-btn" onClick={() => handleCommand('prearm_checks', 'prearm')}>
-              Pre-Arm Checks
+              Предпусковые проверки
             </button>
             {getStatusIndicator('prearm')}
           </div>
@@ -133,19 +133,19 @@ export default function ControlPanel() {
         <div style={buttonRowStyle}>
           <div style={buttonWithStatusStyle}>
             <button className="control-btn" onClick={() => handleCommand('takeoff', 'liftoff')}>
-              Liftoff
+              Взлёт
             </button>
             {getStatusIndicator('liftoff')}
           </div>
           <div style={buttonWithStatusStyle}>
             <button className="control-btn" onClick={() => handleCommand('land', 'landing')}>
-              Landing
+              Посадка
             </button>
             {getStatusIndicator('landing')}
           </div>
           <div style={buttonWithStatusStyle}>
             <button className="control-btn" onClick={() => handleCommand('freeze', 'loiter')}>
-              Loiter
+              Зависание
             </button>
             {getStatusIndicator('loiter')}
           </div>
@@ -155,8 +155,8 @@ export default function ControlPanel() {
       {/* Modals */}
       <ConfirmationModal
         isOpen={showArmModal}
-        title="Arm Drone?"
-        message="Arming will enable motors. Ensure propellers are clear and drone is on level ground."
+        title="Arm?"
+        message="Запуск дрона активиреут моторы. Убедитесь, что пропеллеры закреплены и дрон находится на ровной поверхности."
         onConfirm={() => {
           handleCommand('arm', 'arm');
           setShowArmModal(false);
@@ -166,8 +166,8 @@ export default function ControlPanel() {
 
       <ConfirmationModal
         isOpen={showDisarmModal}
-        title="Disarm Drone?"
-        message="Disarming will cut power to motors. Only do this when drone is landed and stable."
+        title="Disarm?"
+        message="При выключении дрона, питание к моторам перемтанет поступать. Убедитесь, что дрон приземлился."
         onConfirm={() => {
           handleCommand('disarm', 'disarm');
           setShowDisarmModal(false);

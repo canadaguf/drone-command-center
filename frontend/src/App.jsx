@@ -15,14 +15,14 @@ function App() {
       <div>
         <div className="panel">
           <h2 className="section-title">
-            Flight Controls {isConnected ? '🟢' : '🔴'}
+            Управление полётом {isConnected ? '🟢' : '🔴'}
             {error && <span style={{ color: 'red', marginLeft: '8px' }}>{error}</span>}
           </h2>
           <ControlPanel sendCommand={sendCommand} />
         </div>
 
         <div className="panel" style={{ marginTop: '20px' }}>
-          <h2 className="section-title">Detected Chairs</h2>
+          <h2 className="section-title">Объекты</h2>
           <PersonTracker
             detections={detections}
             sendCommand={sendCommand}
@@ -33,7 +33,7 @@ function App() {
       </div>
 
       <div className="panel">
-        <h2 className="section-title">Live Telemetry</h2>
+        <h2 className="section-title">Телеметрия</h2>
         <TelemetryPanel telemetry={telemetry} />
       </div>
     </div>

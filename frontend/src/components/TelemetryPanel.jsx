@@ -25,29 +25,29 @@ export default function TelemetryPanel({ telemetry }) {
     <div style={{ lineHeight: '1.8' }}>
       {/* GPS and Position */}
       <div style={sectionStyle}>
-        <h4 style={sectionTitleStyle}>Position</h4>
+        <h4 style={sectionTitleStyle}>Местоположение</h4>
         <p><strong>GPS:</strong> {telemetry.gps?.lat?.toFixed(4) ?? '—'}, {telemetry.gps?.lon?.toFixed(4) ?? '—'}</p>
         {telemetry.gps?.satellites !== undefined && (
-          <p><strong>GPS Satellites:</strong> {telemetry.gps.satellites}</p>
+          <p><strong>Спутники GPS:</strong> {telemetry.gps.satellites}</p>
         )}
-        <p><strong>Altitude:</strong> {telemetry.altitude !== null && telemetry.altitude !== undefined ? `${telemetry.altitude.toFixed(2)} m` : '—'}</p>
-        <p><strong>Relative Alt:</strong> {telemetry.relative_alt !== null && telemetry.relative_alt !== undefined ? `${telemetry.relative_alt.toFixed(2)} m` : '—'}</p>
+        <p><strong>Высота:</strong> {telemetry.altitude !== null && telemetry.altitude !== undefined ? `${telemetry.altitude.toFixed(2)} m` : '—'}</p>
+        <p><strong>Относительная высота:</strong> {telemetry.relative_alt !== null && telemetry.relative_alt !== undefined ? `${telemetry.relative_alt.toFixed(2)} m` : '—'}</p>
       </div>
 
       {/* Flight Status */}
       <div style={sectionStyle}>
         <h4 style={sectionTitleStyle}>Flight Status</h4>
-        <p><strong>Mode:</strong> {telemetry.mode ?? '—'}</p>
+        <p><strong>Режим:</strong> {telemetry.mode ?? '—'}</p>
         <p><strong>Armed:</strong> {telemetry.armed ? '🟢 YES' : '🔴 NO'}</p>
-        <p><strong>Velocity:</strong> {telemetry.velocity !== null && telemetry.velocity !== undefined ? `${telemetry.velocity.toFixed(2)} m/s` : '—'}</p>
-        <p><strong>Heading:</strong> {telemetry.heading !== null && telemetry.heading !== undefined ? `${telemetry.heading.toFixed(1)}°` : '—'}</p>
+        <p><strong>Скорость:</strong> {telemetry.velocity !== null && telemetry.velocity !== undefined ? `${telemetry.velocity.toFixed(2)} m/s` : '—'}</p>
+        <p><strong>Направление:</strong> {telemetry.heading !== null && telemetry.heading !== undefined ? `${telemetry.heading.toFixed(1)}°` : '—'}</p>
       </div>
 
       {/* Tracking Status */}
       <div style={sectionStyle}>
-        <h4 style={sectionTitleStyle}>Tracking</h4>
+        <h4 style={sectionTitleStyle}>Отслеживание</h4>
         <p>
-          <strong>Status:</strong> 
+          <strong>Статус:</strong> 
           <span style={{ 
             color: getTrackingStatusColor(telemetry.tracking_status),
             fontWeight: 'bold',
@@ -58,7 +58,7 @@ export default function TelemetryPanel({ telemetry }) {
         </p>
         {telemetry.distance_mode && (
           <p>
-            <strong>Distance Mode:</strong> 
+            <strong>Режим дистанции:</strong> 
             <span style={{ 
               fontWeight: 'bold',
               marginLeft: '8px',
@@ -70,7 +70,7 @@ export default function TelemetryPanel({ telemetry }) {
         )}
         {telemetry.rc_override_active && (
           <p style={{ color: '#e74c3c', fontWeight: 'bold' }}>
-            ⚠️ MANUAL CONTROL ACTIVE
+            РУЧНОЕ УПРАВЛЕНИЕ АКТИВИРОВАНО  
           </p>
         )}
       </div>
@@ -78,15 +78,15 @@ export default function TelemetryPanel({ telemetry }) {
       {/* Sensors */}
       <div style={sectionStyle}>
         <h4 style={sectionTitleStyle}>Sensors</h4>
-        <p><strong>TOF Forward:</strong> {telemetry.tof_forward ?? '—'} m</p>
-        <p><strong>TOF Down:</strong> {telemetry.tof_down ?? '—'} m</p>
+        <p><strong>ToF вперёд:</strong> {telemetry.tof_forward ?? '—'} m</p>
+        <p><strong>ToF вниз:</strong> {telemetry.tof_down ?? '—'} m</p>
       </div>
 
       {/* Battery */}
       <div style={sectionStyle}>
         <h4 style={sectionTitleStyle}>Power</h4>
         <p>
-          <strong>Battery:</strong> 
+          <strong>Батарея:</strong> 
           <span style={{ 
             color: getBatteryColor(telemetry.battery),
             fontWeight: 'bold',
@@ -96,7 +96,7 @@ export default function TelemetryPanel({ telemetry }) {
           </span>
         </p>
         {telemetry.battery_voltage !== null && telemetry.battery_voltage !== undefined && (
-          <p><strong>Voltage:</strong> {telemetry.battery_voltage.toFixed(1)} V</p>
+          <p><strong>Напряжение:</strong> {telemetry.battery_voltage.toFixed(1)} V</p>
         )}
       </div>
     </div>

@@ -61,7 +61,7 @@ export default function PersonTracker({ detections, sendCommand, followedId, set
   };
 
   if (detections.length === 0) {
-    return <p>No chairs detected.</p>;
+    return <p>Цели не обнаружены</p>;
   }
 
   return (
@@ -100,7 +100,7 @@ export default function PersonTracker({ detections, sendCommand, followedId, set
 
             {/* Info & Button */}
             <div style={{ flex: 1 }}>
-              <div><strong>Chair ID:</strong> {person.id}</div>
+              <div><strong>ID объекта:</strong> {person.id}</div>
               {person.class_name && (
                 <div style={{ fontSize: '0.9em', color: '#666', marginTop: '4px' }}>
                   Class: {person.class_name}
@@ -108,7 +108,7 @@ export default function PersonTracker({ detections, sendCommand, followedId, set
               )}
               {person.confidence && (
                 <div style={{ fontSize: '0.9em', color: '#666', marginTop: '4px' }}>
-                  Confidence: {(person.confidence * 100).toFixed(1)}%
+                  Оценка достоверности: {(person.confidence * 100).toFixed(1)}%
                 </div>
               )}
               <button

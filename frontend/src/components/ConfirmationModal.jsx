@@ -8,8 +8,8 @@ export default function ConfirmationModal({ isOpen, title, message, onConfirm, o
         <h3 style={{ marginBottom: '12px' }}>{title}</h3>
         <p style={{ marginBottom: '20px', color: '#555' }}>{message}</p>
         <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-          <button onClick={onCancel} style={styles.cancelBtn}>Cancel</button>
-          <button onClick={onConfirm} style={styles.confirmBtn}>Confirm</button>
+          <button onClick={onCancel} style={styles.cancelBtn}>Отменить</button>
+          <button onClick={onConfirm} style={styles.confirmBtn}>Подтвердить</button>
         </div>
       </div>
     </div>

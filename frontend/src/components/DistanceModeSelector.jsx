@@ -28,7 +28,7 @@ export default function DistanceModeSelector({ sendCommand, currentMode = null }
 
   return (
     <div style={styles.container}>
-      <h3 style={styles.title}>Tracking Distance</h3>
+      <h3 style={styles.title}>Дистанция отслеживания</h3>
       <div style={styles.modeGrid}>
         {distanceModes.map(mode => (
           <div
