@@ -30,16 +30,16 @@ export default function TelemetryPanel({ telemetry }) {
         {telemetry.gps?.satellites !== undefined && (
           <p><strong>Спутники GPS:</strong> {telemetry.gps.satellites}</p>
         )}
-        <p><strong>Высота:</strong> {telemetry.altitude !== null && telemetry.altitude !== undefined ? `${telemetry.altitude.toFixed(2)} m` : '—'}</p>
-        <p><strong>Относительная высота:</strong> {telemetry.relative_alt !== null && telemetry.relative_alt !== undefined ? `${telemetry.relative_alt.toFixed(2)} m` : '—'}</p>
+        <p><strong>Высота:</strong> {telemetry.altitude !== null && telemetry.altitude !== undefined ? `${telemetry.altitude.toFixed(2)} м` : '—'}</p>
+        <p><strong>Относительная высота:</strong> {telemetry.relative_alt !== null && telemetry.relative_alt !== undefined ? `${telemetry.relative_alt.toFixed(2)} м` : '—'}</p>
       </div>
 
       {/* Flight Status */}
       <div style={sectionStyle}>
         <h4 style={sectionTitleStyle}>Полётный статус</h4>
         <p><strong>Режим:</strong> {telemetry.mode ?? '—'}</p>
-        <p><strong>Armed:</strong> {telemetry.armed ? '🟢 YES' : '🔴 NO'}</p>
-        <p><strong>Скорость:</strong> {telemetry.velocity !== null && telemetry.velocity !== undefined ? `${telemetry.velocity.toFixed(2)} m/s` : '—'}</p>
+        <p><strong>Armed:</strong> {telemetry.armed ? '🟢 ДА' : '🔴 НЕТ'}</p>
+        <p><strong>Скорость:</strong> {telemetry.velocity !== null && telemetry.velocity !== undefined ? `${telemetry.velocity.toFixed(2)} м/с` : '—'}</p>
         <p><strong>Направление:</strong> {telemetry.heading !== null && telemetry.heading !== undefined ? `${telemetry.heading.toFixed(1)}°` : '—'}</p>
       </div>
 
@@ -78,8 +78,8 @@ export default function TelemetryPanel({ telemetry }) {
       {/* Sensors */}
       <div style={sectionStyle}>
         <h4 style={sectionTitleStyle}>Датчики</h4>
-        <p><strong>ToF вперёд:</strong> {telemetry.tof_forward ?? '—'} m</p>
-        <p><strong>ToF вниз:</strong> {telemetry.tof_down ?? '—'} m</p>
+        <p><strong>ToF вперёд:</strong> {telemetry.tof_forward ?? '—'} м</p>
+        <p><strong>ToF вниз:</strong> {telemetry.tof_down ?? '—'} м</p>
       </div>
 
       {/* Battery */}
